@@ -1,6 +1,6 @@
 Name:           efivar
 Version:        36
-Release:        11%{?dist}.1
+Release:        12%{?dist}
 Summary:        Tools to manage UEFI variables
 License:        LGPLv2+
 URL:            https://github.com/rhinstaller/efivar
@@ -100,9 +100,9 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.so.*
 
 %changelog
-* Tue Nov 13 2018 Javier Martinez Canillas <javierm@redhat.com> - 36-11.el7_6.1
+* Tue Nov 13 2018 Javier Martinez Canillas <javierm@redhat.com> - 36-12
 - Fix partition number detection when it's not provided (pjones)
-  Resolves: rhbz#1649712
+  Resolves: rhbz#1616305
 
 * Mon Sep 17 2018 Peter Jones <pjones@redhat.com> - 36-11
 - Fix device probing with no matching probes where HD() will work
