@@ -18,13 +18,14 @@
  *
  */
 
+#include "fix_coverity.h"
+
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <uchar.h>
 
-#include <efivar.h>
-#include "lib.h"
+#include "efivar.h"
 
 #define EFIVAR_MAGIC 0xf3df1597
 
@@ -53,9 +54,7 @@ struct efi_variable {
  * }
  */
 
-ssize_t
-__attribute__((__nonnull__ (1, 3)))
-__attribute__((__visibility__ ("default")))
+ssize_t NONNULL(1, 3) PUBLIC
 efi_variable_import(uint8_t *data, size_t size, efi_variable_t **var_out)
 {
 	efi_variable_t var;
@@ -96,11 +95,14 @@ efi_variable_import(uint8_t *data, size_t size, efi_variable_t **var_out)
 		ptr += sizeof (uint32_t);
 
 		if (name_len < 1 ||
-				name_len != ((data + size) - ptr - data_len))
+		    name_len != ((data + size) - ptr - data_len) ||
+		    data_len < 1 ||
+		    data_len != ((data + size) - ptr - name_len)) {
+			int saved_errno = errno;
+			free(var.guid);
+			errno = saved_errno;
 			return -1;
-		if (data_len < 1 ||
-				data_len != ((data + size) - ptr - name_len))
-			return -1;
+		}
 
 		var.name = calloc(1, name_len + 1);
 		if (!var.name) {
@@ -115,6 +117,7 @@ efi_variable_import(uint8_t *data, size_t size, efi_variable_t **var_out)
 			var.name[i] = wname[i] & 0xff;
 		ptr += name_len * 2;
 
+		var.data_size = data_len;
 		var.data = malloc(data_len);
 		if (!var.data) {
 			int saved_errno = errno;
@@ -143,9 +146,7 @@ efi_variable_import(uint8_t *data, size_t size, efi_variable_t **var_out)
 	return size;
 }
 
-ssize_t
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+ssize_t NONNULL(1) PUBLIC
 efi_variable_export(efi_variable_t *var, uint8_t *data, size_t size)
 {
 	size_t name_len = strlen(var->name);
@@ -199,13 +200,7 @@ efi_variable_export(efi_variable_t *var, uint8_t *data, size_t size)
 	return needed;
 }
 
-efi_variable_t *
-#if 0 /* we get it from the decl instead of the defn here, because GCC gets
-       * confused and thinks we're saying the /return type/ has visibility
-       * and that makes no sense at all except in C++ where it's a class type.
-       */
-__attribute__((__visibility__ ("default")))
-#endif
+efi_variable_t PUBLIC *
 efi_variable_alloc(void)
 {
 	efi_variable_t *var = calloc(1, sizeof (efi_variable_t));
@@ -216,8 +211,7 @@ efi_variable_alloc(void)
 	return var;
 }
 
-void
-__attribute__((__visibility__ ("default")))
+void PUBLIC
 efi_variable_free(efi_variable_t *var, int free_data)
 {
 	if (!var)
@@ -238,23 +232,14 @@ efi_variable_free(efi_variable_t *var, int free_data)
 	free(var);
 }
 
-int
-__attribute__((__nonnull__ (1, 2)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1, 2) PUBLIC
 efi_variable_set_name(efi_variable_t *var, char *name)
 {
 	var->name = name;
 	return 0;
 }
 
-char *
-__attribute__((__nonnull__ (1)))
-#if 0 /* we get it from the decl instead of the defn here, because GCC gets
-       * confused and thinks we're saying the /return type/ has visibility
-       * and that makes no sense at all except in C++ where it's a class type.
-       */
-__attribute__((__visibility__ ("default")))
-#endif
+char PUBLIC NONNULL(1) *
 efi_variable_get_name(efi_variable_t *var)
 {
 	if (!var->name) {
@@ -265,18 +250,14 @@ efi_variable_get_name(efi_variable_t *var)
 	return var->name;
 }
 
-int
-__attribute__((__nonnull__ (1, 2)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1, 2) PUBLIC
 efi_variable_set_guid(efi_variable_t *var, efi_guid_t *guid)
 {
 	var->guid = guid;
 	return 0;
 }
 
-int
-__attribute__((__nonnull__ (1, 2)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1, 2) PUBLIC
 efi_variable_get_guid(efi_variable_t *var, efi_guid_t **guid)
 {
 	if (!var->guid) {
@@ -288,9 +269,7 @@ efi_variable_get_guid(efi_variable_t *var, efi_guid_t **guid)
 	return 0;
 }
 
-int
-__attribute__((__nonnull__ (1, 2)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1, 2) PUBLIC
 efi_variable_set_data(efi_variable_t *var, uint8_t *data, size_t size)
 {
 	if (!size) {
@@ -303,9 +282,7 @@ efi_variable_set_data(efi_variable_t *var, uint8_t *data, size_t size)
 	return 0;
 }
 
-ssize_t
-__attribute__((__nonnull__ (1, 2, 3)))
-__attribute__((__visibility__ ("default")))
+ssize_t NONNULL(1, 2, 3) PUBLIC
 efi_variable_get_data(efi_variable_t *var, uint8_t **data, size_t *size)
 {
 	if (var->data || !var->data_size) {
@@ -318,18 +295,14 @@ efi_variable_get_data(efi_variable_t *var, uint8_t **data, size_t *size)
 	return 0;
 }
 
-int
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1) PUBLIC
 efi_variable_set_attributes(efi_variable_t *var, uint64_t attrs)
 {
 	var->attrs = attrs;
 	return 0;
 }
 
-int
-__attribute__((__nonnull__ (1, 2)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1, 2) PUBLIC
 efi_variable_get_attributes(efi_variable_t *var, uint64_t *attrs)
 {
 	if (var->attrs == ATTRS_UNSET) {
@@ -341,9 +314,7 @@ efi_variable_get_attributes(efi_variable_t *var, uint64_t *attrs)
 	return 0;
 }
 
-int
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1) PUBLIC
 efi_variable_realize(efi_variable_t *var)
 {
 	if (!var->name || !var->data || !var->data_size ||

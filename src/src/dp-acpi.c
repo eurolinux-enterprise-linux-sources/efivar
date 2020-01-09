@@ -18,23 +18,24 @@
  *
  */
 
+#include "fix_coverity.h"
+
 #include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stddef.h>
 
-#include <efivar.h>
-#include "dp.h"
+#include "efivar.h"
 
 static ssize_t
 _format_acpi_adr(char *buf, size_t size,
-		 const char *dp_type __attribute__((__unused__)),
+		 const char *dp_type UNUSED,
 		 const_efidp dp)
 {
 	ssize_t off = 0;
 	format(buf, size, off, "AcpiAdr", "AcpiAdr(");
 	format_array(buf, size, off, "AcpiAdr", "0x%"PRIx32,
-		     typeof(dp->acpi_adr.adr[0]), dp->acpi_adr.adr,
+		     __typeof__(dp->acpi_adr.adr[0]), dp->acpi_adr.adr,
 		     (efidp_node_size(dp)-4) / sizeof (dp->acpi_adr.adr[0]));
 	format(buf, size, off, "AcpiAdr", ")");
 	return off;
@@ -72,13 +73,17 @@ _format_acpi_dn(char *buf, size_t size, const_efidp dp)
 		hidlen = strnlen(hidstr, limit);
 		limit -= hidlen + 1;
 
-		uidstr = hidstr + hidlen + 1;
-		uidlen = strnlen(uidstr, limit);
-		limit -= uidlen + 1;
+		if (limit) {
+			uidstr = hidstr + hidlen + 1;
+			uidlen = strnlen(uidstr, limit);
+			limit -= uidlen + 1;
+		}
 
-		cidstr = uidstr + uidlen + 1;
-		cidlen = strnlen(cidstr, limit);
-		limit -= cidlen + 1;
+		if (limit) {
+			cidstr = uidstr + uidlen + 1;
+			cidlen = strnlen(cidstr, limit);
+			// limit -= cidlen + 1;
+		}
 
 		if (uidstr) {
 			switch (dp->acpi_hid.hid) {
@@ -90,6 +95,28 @@ _format_acpi_dn(char *buf, size_t size, const_efidp dp)
 				format(buf, size, off, "PcieRoot",
 				       "PcieRoot(%s)", uidstr);
 				return off;
+			default:
+				format(buf, size, off, "AcpiEx", "AcpiEx(");
+				if (hidlen)
+					format(buf, size, off, "AcpiEx", "%s",
+							hidstr);
+				else
+					format(buf, size, off, "AcpiEx", "0x%"PRIx32,
+							dp->acpi_hid_ex.hid);
+				if (cidlen)
+					format(buf, size, off, "AcpiEx", ",%s",
+							cidstr);
+				else
+					format(buf, size, off, "AcpiEx", ",0x%"PRIx32,
+							dp->acpi_hid_ex.cid);
+				if (uidlen)
+					format(buf, size, off, "AcpiEx", ",%s",
+							uidstr);
+				else
+					format(buf, size, off, "AcpiEx", ",0x%"PRIx32,
+							dp->acpi_hid_ex.uid);
+				format(buf, size, off, "AcpiEx", ")");
+				break;
 			}
 		}
 	}
@@ -115,6 +142,51 @@ _format_acpi_dn(char *buf, size_t size, const_efidp dp)
 		format(buf, size, off, "Keyboard", "Serial(0x%"PRIx32")",
 		       dp->acpi_hid.uid);
 		break;
+	case EFIDP_ACPI_NVDIMM_HID: {
+		int rc;
+		const_efidp next = NULL;
+		efidp_acpi_adr *adrdp;
+		int end;
+
+		format(buf, size, off, "NvRoot()", "NvRoot()");
+
+		rc = efidp_next_node(dp, &next);
+		if (rc < 0 || !next) {
+			efi_error("could not format DP");
+			return rc;
+		}
+
+		if (efidp_type(next) != EFIDP_ACPI_TYPE ||
+		    efidp_subtype(next) != EFIDP_ACPI_ADR) {
+			efi_error("Invalid child node type (0x%02x,0x%02x)",
+				  efidp_type(next), efidp_subtype(next));
+			return -EINVAL;
+		}
+		adrdp = (efidp_acpi_adr *)next;
+
+		end = efidp_size_after(adrdp, header)
+			/ sizeof(adrdp->adr[0]);
+
+		for (int i = 0; i < end; i++) {
+			uint32_t node_controller, socket, memory_controller;
+			uint32_t memory_channel, dimm;
+			uint32_t adr = adrdp->adr[i];
+
+			efidp_decode_acpi_nvdimm_adr(adr, &node_controller,
+						     &socket,
+						     &memory_controller,
+						     &memory_channel, &dimm);
+
+			if (i != 0)
+				format(buf, size, off, "NvDimm", ",");
+
+			format(buf, size, off, "NvDimm",
+			       "NvDimm(0x%03x,0x%01x,0x%01x,0x%01x,0x%01x)",
+			       node_controller, socket, memory_controller,
+			       memory_channel, dimm);
+		}
+		break;
+				    }
 	default:
 		switch (dp->subtype) {
 		case EFIDP_ACPI_HID_EX:
@@ -167,8 +239,7 @@ _format_acpi_dn(char *buf, size_t size, const_efidp dp)
 	return off;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_acpi_hid(uint8_t *buf, ssize_t size, uint32_t hid, uint32_t uid)
 {
 	efidp_acpi_hid *acpi_hid = (efidp_acpi_hid *)buf;
@@ -188,12 +259,11 @@ efidp_make_acpi_hid(uint8_t *buf, ssize_t size, uint32_t hid, uint32_t uid)
 	return sz;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
-__attribute__((__nonnull__ (6,7,8)))
+ssize_t PUBLIC NONNULL(6, 7, 8)
 efidp_make_acpi_hid_ex(uint8_t *buf, ssize_t size,
 		       uint32_t hid, uint32_t uid, uint32_t cid,
-		       char *hidstr, char *uidstr, char *cidstr)
+		       const char *hidstr, const char *uidstr,
+		       const char *cidstr)
 {
 	efidp_acpi_hid_ex *acpi_hid = (efidp_acpi_hid_ex *)buf;
 	ssize_t req;

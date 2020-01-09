@@ -18,10 +18,14 @@
  * <http://www.gnu.org/licenses/>.
  *
  */
+
+#include "fix_coverity.h"
+
 #include <asm/byteorder.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,15 +36,7 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
-#include <efivar.h>
-#include <efiboot.h>
-
-#include "util.h"
-#include "crc32.h"
-#include "disk.h"
-#include "gpt.h"
-
-static int report_errors;
+#include "efiboot.h"
 
 /**
  * is_mbr_valid(): test MBR for validity
@@ -76,11 +72,11 @@ is_mbr_valid(legacy_mbr *mbr)
  *
  ************************************************************/
 static int
-msdos_disk_get_extended_partition_info (int fd __attribute__((unused)),
-					legacy_mbr *mbr __attribute__((unused)),
-					uint32_t num __attribute__((unused)),
-					uint64_t *start __attribute__((unused)),
-					uint64_t *size __attribute__((unused)))
+msdos_disk_get_extended_partition_info (int fd UNUSED,
+					legacy_mbr *mbr UNUSED,
+					uint32_t num UNUSED,
+					uint64_t *start UNUSED,
+					uint64_t *size UNUSED)
 {
         /* Until I can handle these... */
         //fprintf(stderr, "Extended partition info not supported.\n");
@@ -126,30 +122,26 @@ msdos_disk_get_partition_info (int fd, int write_signature,
 	*mbr_type = 0x01;
 	*signature_type = 0x01;
 
-	if (!mbr->unique_mbr_signature && !write_signature && report_errors) {
-		printf("\n\n******************************************************\n");
-		printf("Warning! This MBR disk does not have a unique signature.\n");
-		printf("If this is not the first disk found by EFI, you may not be able\n");
-		printf("to boot from it without a unique signature.\n");
-		printf("Run efibootmgr with the -w flag to write a unique signature\n");
-		printf("to the disk.\n");
-		printf("******************************************************\n\n");
+	if (!mbr->unique_mbr_signature && !write_signature) {
+		efi_error("\n******************************************************\n"
+			  "Warning! This MBR disk does not have a unique signature.\n"
+			  "If this is not the first disk found by EFI, you may not be able\n"
+			  "to boot from it without a unique signature.\n"
+			  "Run efibootmgr with the -w flag to write a unique signature\n"
+			  "to the disk.\n"
+			  "******************************************************");
 	} else if (!mbr->unique_mbr_signature && write_signature) {
 		/* MBR Signatures must be unique for the
 		   EFI Boot Manager
 		   to find the right disk to boot from */
 		rc = fstat(fd, &stat);
 		if (rc < 0) {
-			if (report_errors)
-				perror("fstat disk");
 			efi_error("could not fstat disk");
 			return rc;
 		}
 
 		rc = gettimeofday(&tv, NULL);
 		if (rc < 0) {
-			if (report_errors)
-				perror("gettimeofday");
 			efi_error("gettimeofday failed");
 			return rc;
 		}
@@ -199,7 +191,7 @@ get_partition_info(int fd, uint32_t options,
 	legacy_mbr *mbr;
 	void *mbr_sector;
 	size_t mbr_size;
-	off_t offset __attribute__((unused));
+	off_t offset UNUSED;
 	int this_bytes_read = 0;
 	int gpt_invalid=0, mbr_invalid=0;
 	int rc=0;
@@ -216,7 +208,7 @@ get_partition_info(int fd, uint32_t options,
 	this_bytes_read = read(fd, mbr_sector, mbr_size);
 	if (this_bytes_read < (ssize_t)sizeof(*mbr)) {
 		efi_error("short read trying to read mbr data");
-		rc=1;
+		rc = -1;
 		goto error_free_mbr;
 	}
 	mbr = (legacy_mbr *)mbr_sector;
@@ -225,8 +217,9 @@ get_partition_info(int fd, uint32_t options,
 						  signature,
 						  mbr_type,
 						  signature_type,
-			(options & EFIBOOT_OPTIONS_IGNORE_PMBR_ERR)?1:0);
-	if (gpt_invalid) {
+			(options & EFIBOOT_OPTIONS_IGNORE_PMBR_ERR)?1:0,
+			sector_size);
+	if (gpt_invalid < 0) {
 		mbr_invalid = msdos_disk_get_partition_info(fd,
 			(options & EFIBOOT_OPTIONS_WRITE_SIGNATURE)?1:0,
 							    mbr, part,
@@ -234,9 +227,9 @@ get_partition_info(int fd, uint32_t options,
 							    signature,
 							    mbr_type,
 							    signature_type);
-		if (mbr_invalid) {
+		if (mbr_invalid < 0) {
 			efi_error("neither MBR nor GPT is valid");
-			rc=1;
+			rc = -1;
 			goto error_free_mbr;
 		}
 		efi_error_clear();
@@ -247,22 +240,36 @@ get_partition_info(int fd, uint32_t options,
 	return rc;
 }
 
-ssize_t
-__attribute__((__visibility__ ("hidden")))
-_make_hd_dn(uint8_t *buf, ssize_t size, int fd, uint32_t partition,
+bool HIDDEN
+is_partitioned(int fd)
+{
+	int rc;
+	uint32_t options = 0;
+	uint32_t part = 1;
+	uint64_t start = 0, size = 0;
+	uint8_t signature = 0, mbr_type = 0, signature_type = 0;
+
+	rc = get_partition_info(fd, options, part, &start, &size,
+				&signature, &mbr_type, &signature_type);
+	if (rc < 0)
+		return false;
+	return true;
+}
+
+ssize_t HIDDEN
+_make_hd_dn(uint8_t *buf, ssize_t size, int fd, int32_t partition,
 	    uint32_t options)
 {
 	uint64_t part_start=0, part_size = 0;
 	uint8_t signature[16]="", format=0, signature_type=0;
 	int rc;
 
-	char *report=getenv("LIBEFIBOOT_REPORT_GPT_ERRORS");
-	if (report)
-		report_errors = 1;
 	errno = 0;
 
-	rc = get_partition_info(fd, options,
-				partition > 0 ? partition : 1, &part_start,
+	if (partition <= 0)
+		return 0;
+
+	rc = get_partition_info(fd, options, partition, &part_start,
 				&part_size, signature, &format,
 				&signature_type);
 	if (rc < 0) {
@@ -270,8 +277,8 @@ _make_hd_dn(uint8_t *buf, ssize_t size, int fd, uint32_t partition,
 		return rc;
 	}
 
-	rc = efidp_make_hd(buf, size, partition>0?partition:1, part_start,
-			   part_size, signature, format, signature_type);
+	rc = efidp_make_hd(buf, size, partition, part_start, part_size,
+			   signature, format, signature_type);
 	if (rc < 0)
 		efi_error("could not make HD DP node");
 	return rc;

@@ -18,19 +18,26 @@
  *
  */
 
+#include "fix_coverity.h"
+
 #include <ctype.h>
 #include <err.h>
 #include <fcntl.h>
-#include <popt.h>
+#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <limits.h>
+
+extern char *optarg;
+extern int optind, opterr, optopt;
 
 #include "efivar.h"
-#include "guid.h"
 
 #define ACTION_LIST		0x1
 #define ACTION_PRINT		0x2
@@ -61,7 +68,7 @@ static int verbose_errors = 0;
 static void
 show_errors(void)
 {
-	int rc = 0;
+	int rc = 1;
 
 	if (!verbose_errors)
 		return;
@@ -160,14 +167,14 @@ bad_name:
 		fprintf(stderr, "efivar: %m\n");
 		exit(1);
 	}
-	strncpy(name_buf, guid_name + name_pos, name_len);
+	strcpy(name_buf, guid_name + name_pos);
 	*name = name_buf;
 }
 
 static void
 show_variable(char *guid_name, int display_type)
 {
-	efi_guid_t guid;
+	efi_guid_t guid = efi_guid_empty;
 	char *name = NULL;
 	int rc;
 
@@ -176,6 +183,11 @@ show_variable(char *guid_name, int display_type)
 	uint32_t attributes;
 
 	parse_name(guid_name, &name, &guid);
+	if (!name || efi_guid_is_empty(&guid)) {
+		fprintf(stderr, "efivar: could not parse variable name.\n");
+		show_errors();
+		exit(1);
+	}
 
 	errno = 0;
 	rc = efi_get_variable(guid, name, &data, &data_size, &attributes);
@@ -244,13 +256,17 @@ show_variable(char *guid_name, int display_type)
 		}
 		printf("\n");
 	}
+
+	free(name);
+	if (data)
+		free(data);
 }
 
 static void
-edit_variable(const char *guid_name, void *data, size_t data_size, int attrib,
-	      int edit_type)
+edit_variable(const char *guid_name, void *data, size_t data_size,
+	      uint32_t attrib, int edit_type)
 {
-	efi_guid_t guid;
+	efi_guid_t guid = efi_guid_empty;
 	char *name = NULL;
 	int rc;
 	uint8_t *old_data = NULL;
@@ -258,10 +274,15 @@ edit_variable(const char *guid_name, void *data, size_t data_size, int attrib,
 	uint32_t old_attributes = 0;
 
 	parse_name(guid_name, &name, &guid);
+	if (!name || efi_guid_is_empty(&guid)) {
+		fprintf(stderr, "efivar: could not parse variable name.\n");
+		show_errors();
+		exit(1);
+	}
 
 	rc = efi_get_variable(guid, name, &old_data, &old_data_size,
 				&old_attributes);
-	if (rc < 0) {
+	if (rc < 0 && edit_type != EDIT_WRITE) {
 		fprintf(stderr, "efivar: %m\n");
 		show_errors();
 		exit(1);
@@ -280,6 +301,10 @@ edit_variable(const char *guid_name, void *data, size_t data_size, int attrib,
 					old_attributes, 0644);
 			break;
 	}
+
+	free(name);
+	if (old_data)
+		free(old_data);
 
 	if (rc < 0) {
 		fprintf(stderr, "efivar: %m\n");
@@ -307,6 +332,11 @@ prepare_data(const char *filename, void **data, size_t *data_size)
 	struct stat statbuf;
 	int rc;
 
+	if (filename == NULL) {
+		fprintf(stderr, "Input filename must be provided.\n");
+		exit(1);
+	}
+
 	fd = open(filename, O_RDONLY);
 	if (fd < 0)
 		goto err;
@@ -333,103 +363,97 @@ err:
 	exit(1);
 }
 
+static void
+usage(const char *progname)
+{
+	printf("Usage: %s [OPTION...]\n", basename(progname));
+	printf("  -l, --list                        list current variables\n");
+	printf("  -p, --print                       print variable specified by --name\n");
+	printf("  -d, --print-decimal               print variable in decimal values specified\n");
+	printf("                                    by --name\n");
+	printf("  -n, --name=<guid-name>            variable to manipulate, in the form\n");
+	printf("                                    8be4df61-93ca-11d2-aa0d-00e098032b8c-Boot0000\n");
+	printf("  -a, --append                      append to variable specified by --name\n");
+	printf("  -f, --fromfile=<file>             use data from <file>\n");
+	printf("  -t, --attributes=<attributes>     attributes to use on append\n");
+	printf("  -L, --list-guids                  show internal guid list\n");
+	printf("  -w, --write                       write to variable specified by --name\n\n");
+	printf("Help options:\n");
+	printf("  -?, --help                        Show this help message\n");
+	printf("      --usage                       Display brief usage message\n");
+	return;
+}
+
 int main(int argc, char *argv[])
 {
+	int c = 0;
+	int i = 0;
 	int action = 0;
-	char *name = NULL;
-	char *file = NULL;
-	int attributes = 0;
-	poptContext optCon;
-	struct poptOption options[] = {
-		{.argInfo = POPT_ARG_INTL_DOMAIN,
-		 .arg = "efivar" },
-		{.longName = "list",
-		 .shortName = 'l',
-		 .argInfo = POPT_ARG_VAL,
-		 .arg = &action,
-		 .val = ACTION_LIST,
-		 .descrip = "list current variables", },
-		{.longName = "print",
-		 .shortName = 'p',
-		 .argInfo = POPT_ARG_VAL,
-		 .arg = &action,
-		 .val = ACTION_PRINT,
-		 .descrip = "print variable specified by --name", },
-		{.longName = "print-decimal",
-		 .shortName = 'd',
-		 .argInfo = POPT_ARG_VAL,
-		 .arg = &action,
-		 .val = ACTION_PRINT_DEC,
-		 .descrip = "print variable in decimal values specified by --name" },
-		{.longName = "name",
-		 .shortName = 'n',
-		 .argInfo = POPT_ARG_STRING,
-		 .arg = &name,
-		 .descrip = "variable to manipulate, in the form 8be4df61-93ca-11d2-aa0d-00e098032b8c-Boot0000",
-		 .argDescrip = "<guid-name>" },
-		{.longName = "append",
-		 .shortName = 'a',
-		 .argInfo = POPT_ARG_VAL,
-		 .arg = &action,
-		 .val = ACTION_APPEND,
-		 .descrip = "append to variable specified by --name", },
-		{.longName = "fromfile",
-		 .shortName = 'f',
-		 .argInfo = POPT_ARG_STRING,
-		 .arg = &file,
-		 .descrip = "use data from <file>",
-		 .argDescrip = "<file>" },
-		{.longName = "attributes",
-		 .shortName = 't',
-		 .argInfo = POPT_ARG_INT,
-		 .arg = &attributes,
-		 .descrip = "attributes to use on append",
-		 .argDescrip = "<attributes>" },
-		{.longName = "list-guids",
-		 .shortName = 'L',
-		 .argInfo = POPT_ARG_VAL,
-		 .arg = &action,
-		 .val = ACTION_LIST_GUIDS,
-		 .descrip = "show internal guid list", },
-		{.longName = "write",
-		 .shortName = 'w',
-		 .argInfo = POPT_ARG_VAL,
-		 .arg = &action,
-		 .val = ACTION_WRITE,
-		 .descrip = "write to variable specified by --name" },
-		POPT_AUTOALIAS
-		POPT_AUTOHELP
-		POPT_TABLEEND
-	};
-	int rc;
 	void *data = NULL;
 	size_t data_size = 0;
+	char *name = NULL;
+	char *file = NULL;
+	uint32_t attributes = 0;
+	char *sopts = "lpdn:af:t:Lw?";
+	struct option lopts[] =
+		{ {"list", no_argument, 0, 'l'},
+		  {"print", no_argument, 0, 'p'},
+		  {"print-decimal", no_argument, 0, 'd'},
+		  {"name", required_argument, 0, 'n'},
+		  {"append", no_argument, 0, 'a'},
+		  {"fromfile", required_argument, 0, 'f'},
+		  {"attributes", required_argument, 0, 't'},
+		  {"list-guids", no_argument, 0, 'L'},
+		  {"write", no_argument, 0, 'w'},
+		  {"help", no_argument, 0, '?'},
+		  {"usage", no_argument, 0, 0},
+		  {0, 0, 0, 0}
+		};
 
-	optCon = poptGetContext("efivar", argc, (const char **)argv, options,0);
-
-	rc = poptReadDefaultConfig(optCon, 0);
-	if (rc < 0 && !(rc == POPT_ERROR_ERRNO && errno == ENOENT)) {
-		fprintf(stderr, "efivar: poptReadDefaultConfig failed: %s\n",
-			poptStrerror(rc));
-		exit(1);
+	while ((c = getopt_long(argc, argv, sopts, lopts, &i)) != -1) {
+		switch (c) {
+			case 'l':
+				action |= ACTION_LIST;
+				break;
+			case 'p':
+				action |= ACTION_PRINT;
+				break;
+			case 'd':
+				action |= ACTION_PRINT_DEC;
+				break;
+			case 'n':
+				name = optarg;
+				break;
+			case 'a':
+				action |= ACTION_APPEND;
+				break;
+			case 'f':
+				file = optarg;
+				break;
+			case 't':
+				attributes = strtoul(optarg, NULL, 10);
+				if (errno == ERANGE || errno == EINVAL) {
+					fprintf(stderr, "invalid argument for -t: %s: %s\n", optarg, strerror(errno));
+					return EXIT_FAILURE;
+				}
+				break;
+			case 'L':
+				action |= ACTION_LIST_GUIDS;
+				break;
+			case 'w':
+				action |= ACTION_WRITE;
+				break;
+			case '?':
+				usage(argv[0]);
+				return EXIT_SUCCESS;
+			case 0:
+				if (strcmp(lopts[i].name, "usage")) {
+					usage(argv[0]);
+					return EXIT_SUCCESS;
+				}
+				break;
+		}
 	}
-
-	while ((rc = poptGetNextOpt(optCon)) > 0)
-		;
-
-	if (rc < -1) {
-		fprintf(stderr, "efivar: Invalid argument: %s: %s\n",
-			poptBadOption(optCon, 0), poptStrerror(rc));
-		exit(1);
-	}
-
-	if (poptPeekArg(optCon)) {
-		fprintf(stderr, "efivar: Invalid Argument: \"%s\"\n",
-			poptPeekArg(optCon));
-		exit(1);
-	}
-
-	poptFreeContext(optCon);
 
 	if (name)
 		action |= ACTION_PRINT;

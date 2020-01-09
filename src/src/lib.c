@@ -17,6 +17,9 @@
  * <http://www.gnu.org/licenses/>.
  *
  */
+
+#include "fix_coverity.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -26,8 +29,6 @@
 #include <unistd.h>
 
 #include "efivar.h"
-#include "lib.h"
-#include "generics.h"
 
 static int default_probe(void)
 {
@@ -41,9 +42,7 @@ struct efi_var_operations default_ops = {
 
 struct efi_var_operations *ops = NULL;
 
-int
-__attribute__((__nonnull__ (2, 3)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2, 3) PUBLIC
 _efi_set_variable(efi_guid_t guid, const char *name, uint8_t *data,
 		  size_t data_size, uint32_t attributes)
 {
@@ -53,11 +52,9 @@ _efi_set_variable(efi_guid_t guid, const char *name, uint8_t *data,
 		efi_error("ops->set_variable() failed");
 	return rc;
 }
-__asm__(".symver _efi_set_variable,_efi_set_variable@libefivar.so.0");
+VERSION(_efi_set_variable, _efi_set_variable@libefivar.so.0);
 
-int
-__attribute__((__nonnull__ (2, 3)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2, 3) PUBLIC
 _efi_set_variable_variadic(efi_guid_t guid, const char *name, uint8_t *data,
 			   size_t data_size, uint32_t attributes, ...)
 {
@@ -67,11 +64,9 @@ _efi_set_variable_variadic(efi_guid_t guid, const char *name, uint8_t *data,
 		efi_error("ops->set_variable() failed");
 	return rc;
 }
-__asm__(".symver _efi_set_variable_variadic,efi_set_variable@libefivar.so.0");
+VERSION(_efi_set_variable_variadic, efi_set_variable@libefivar.so.0);
 
-int
-__attribute__((__nonnull__ (2, 3)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2, 3) PUBLIC
 _efi_set_variable_mode(efi_guid_t guid, const char *name, uint8_t *data,
 		       size_t data_size, uint32_t attributes, mode_t mode)
 {
@@ -83,18 +78,14 @@ _efi_set_variable_mode(efi_guid_t guid, const char *name, uint8_t *data,
 		efi_error_clear();
 	return rc;
 }
-__asm__(".symver _efi_set_variable_mode,efi_set_variable@@LIBEFIVAR_0.24");
+VERSION(_efi_set_variable_mode,efi_set_variable@@LIBEFIVAR_0.24);
 
-int
-__attribute__((__nonnull__ (2, 3)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2, 3) PUBLIC
 efi_set_variable(efi_guid_t guid, const char *name, uint8_t *data,
 		 size_t data_size, uint32_t attributes, mode_t mode)
-	__attribute((weak, alias ("_efi_set_variable_mode")));
+        ALIAS(_efi_set_variable_mode);
 
-int
-__attribute__((__nonnull__ (2, 3)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2, 3) PUBLIC
 efi_append_variable(efi_guid_t guid, const char *name, uint8_t *data,
 			size_t data_size, uint32_t attributes)
 {
@@ -116,9 +107,7 @@ efi_append_variable(efi_guid_t guid, const char *name, uint8_t *data,
 	return rc;
 }
 
-int
-__attribute__((__nonnull__ (2)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2) PUBLIC
 efi_del_variable(efi_guid_t guid, const char *name)
 {
 	int rc;
@@ -135,9 +124,7 @@ efi_del_variable(efi_guid_t guid, const char *name)
 	return rc;
 }
 
-int
-__attribute__((__nonnull__ (2, 3, 4, 5)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2, 3, 4, 5) PUBLIC
 efi_get_variable(efi_guid_t guid, const char *name, uint8_t **data,
 		  size_t *data_size, uint32_t *attributes)
 {
@@ -155,9 +142,7 @@ efi_get_variable(efi_guid_t guid, const char *name, uint8_t **data,
 	return rc;
 }
 
-int
-__attribute__((__nonnull__ (2, 3)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2, 3) PUBLIC
 efi_get_variable_attributes(efi_guid_t guid, const char *name,
 			    uint32_t *attributes)
 {
@@ -175,9 +160,14 @@ efi_get_variable_attributes(efi_guid_t guid, const char *name,
 	return rc;
 }
 
-int
-__attribute__((__nonnull__ (2, 3)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2) PUBLIC
+efi_get_variable_exists(efi_guid_t guid, const char *name)
+{
+	uint32_t unused_attributes = 0;
+	return efi_get_variable_attributes(guid, name, &unused_attributes);
+}
+
+int NONNULL(2, 3) PUBLIC
 efi_get_variable_size(efi_guid_t guid, const char *name, size_t *size)
 {
 	int rc;
@@ -194,9 +184,7 @@ efi_get_variable_size(efi_guid_t guid, const char *name, size_t *size)
 	return rc;
 }
 
-int
-__attribute__((__nonnull__ (1, 2)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1, 2) PUBLIC
 efi_get_next_variable_name(efi_guid_t **guid, char **name)
 {
 	int rc;
@@ -213,9 +201,7 @@ efi_get_next_variable_name(efi_guid_t **guid, char **name)
 	return rc;
 }
 
-int
-__attribute__((__nonnull__ (2)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(2) PUBLIC
 efi_chmod_variable(efi_guid_t guid, const char *name, mode_t mode)
 {
 	int rc;
@@ -232,8 +218,7 @@ efi_chmod_variable(efi_guid_t guid, const char *name, mode_t mode)
 	return rc;
 }
 
-int
-__attribute__((__visibility__ ("default")))
+int PUBLIC
 efi_variables_supported(void)
 {
 	if (ops == &default_ops)
@@ -241,9 +226,9 @@ efi_variables_supported(void)
 	return 1;
 }
 
-static void libefivar_init(void) __attribute__((constructor));
+static void CONSTRUCTOR libefivar_init(void);
 
-static void
+static void CONSTRUCTOR
 libefivar_init(void)
 {
 	struct efi_var_operations *ops_list[] = {
@@ -253,6 +238,13 @@ libefivar_init(void)
 		NULL
 	};
 	char *ops_name = getenv("LIBEFIVAR_OPS");
+        if (ops_name && strcasestr(ops_name, "help")) {
+                printf("LIBEFIVAR_OPS operations available:\n");
+                for (int i = 0; ops_list[i] != NULL; i++)
+                        printf("\t%s\n", ops_list[i]->name);
+                exit(0);
+        }
+
 	for (int i = 0; ops_list[i] != NULL; i++)
 	{
 		if (ops_name != NULL) {

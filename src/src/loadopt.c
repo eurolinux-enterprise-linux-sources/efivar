@@ -19,11 +19,14 @@
  *
  */
 
-#include <efivar.h>
+#include "fix_coverity.h"
+
 #include <stddef.h>
 
-#include "dp.h"
+#include "efiboot.h"
 #include "include/efivar/efiboot-loadopt.h"
+#include "util.h"
+#include "hexdump.h"
 
 typedef struct efi_load_option_s {
 	uint32_t attributes;
@@ -31,13 +34,9 @@ typedef struct efi_load_option_s {
 	uint16_t description[];
 	// uint8_t file_path_list[];
 	// uint8_t optional_data[];
-}
-__attribute__((packed))
-efi_load_option;
+} PACKED efi_load_option;
 
-ssize_t
-__attribute__((__nonnull__ (6)))
-__attribute__((__visibility__ ("default")))
+ssize_t NONNULL(6) PUBLIC
 efi_loadopt_create(uint8_t *buf, ssize_t size, uint32_t attributes,
 		   efidp dp, ssize_t dp_size, unsigned char *description,
 		   uint8_t *optional_data, size_t optional_data_size)
@@ -46,46 +45,75 @@ efi_loadopt_create(uint8_t *buf, ssize_t size, uint32_t attributes,
 	ssize_t sz = sizeof (attributes)
 		     + sizeof (uint16_t) + desc_len
 		     + dp_size + optional_data_size;
+
+	debug(DEBUG, "entry buf:%p size:%zd dp:%p dp_size:%zd",
+	      buf, size, dp, dp_size);
+
 	if (size == 0)
 		return sz;
+
 	if (size < sz) {
 		errno = ENOSPC;
 		return -1;
 	}
 
-	if (!optional_data && optional_data_size != 0) {
+	debug(DEBUG, "testing buf");
+	if (!buf) {
+invalid:
 		errno = EINVAL;
 		return -1;
 	}
 
-	if (!dp && dp_size == 0) {
-		errno = EINVAL;
-		return -1;
+	debug(DEBUG, "testing optional data presence");
+	if (!optional_data && optional_data_size != 0)
+		goto invalid;
+
+	debug(DEBUG, "testing dp presence");
+	if ((!dp && dp_size == 0) || dp_size < 0)
+		goto invalid;
+
+	if (dp) {
+		debug(DEBUG, "testing dp validity");
+		if (!efidp_is_valid(dp, dp_size)) {
+			if (efi_get_verbose() >= 1)
+				hexdump((void *)dp, dp_size);
+			goto invalid;
+		}
+
+		debug(DEBUG,
+		      "testing dp size: dp_size:%zd efidp_size(dp):%zd",
+		      dp_size, efidp_size(dp));
+		if (efidp_size(dp) != dp_size) {
+			if (efi_get_verbose() >= 1)
+				hexdump((void *)dp, dp_size);
+			goto invalid;
+		}
 	}
 
-	uint8_t *pos = buf;
+	if (buf) {
+		uint8_t *pos = buf;
+		*(uint32_t *)pos = attributes;
+		pos += sizeof (attributes);
 
-	*(uint32_t *)pos = attributes;
-	pos += sizeof (attributes);
+		*(uint16_t *)pos = dp_size;
+		pos += sizeof (uint16_t);
 
-	*(uint16_t *)pos = dp_size;
-	pos += sizeof (uint16_t);
+		utf8_to_ucs2((uint16_t *)pos, desc_len, 1,
+			     (uint8_t *)description);
+		pos += desc_len;
 
-	utf8_to_ucs2((uint16_t *)pos, desc_len, 1, (uint8_t *)description);
-	pos += desc_len;
+		if (dp)
+			memcpy(pos, dp, dp_size);
+		pos += dp_size;
 
-	memcpy(pos, dp, dp_size);
-	pos += dp_size;
-
-	if (optional_data && optional_data_size > 0)
-		memcpy(pos, optional_data, optional_data_size);
+		if (optional_data && optional_data_size > 0)
+			memcpy(pos, optional_data, optional_data_size);
+	}
 
 	return sz;
 }
 
-ssize_t
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+ssize_t NONNULL(1) PUBLIC
 efi_loadopt_optional_data_size(efi_load_option *opt, size_t size)
 {
 	ssize_t sz;
@@ -133,9 +161,7 @@ efi_loadopt_optional_data_size(efi_load_option *opt, size_t size)
 	return ret;
 }
 
-int
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1) PUBLIC
 efi_loadopt_is_valid(efi_load_option *opt, size_t size)
 {
 	ssize_t rc;
@@ -144,33 +170,25 @@ efi_loadopt_is_valid(efi_load_option *opt, size_t size)
 	return (rc >= 0);
 }
 
-uint32_t
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+uint32_t NONNULL(1) PUBLIC
 efi_loadopt_attrs(efi_load_option *opt)
 {
 	return opt->attributes;
 }
 
-void
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+void NONNULL(1) PUBLIC
 efi_loadopt_attr_set(efi_load_option *opt, uint16_t attr)
 {
 	opt->attributes |= attr;
 }
 
-void
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+void NONNULL(1) PUBLIC
 efi_loadopt_attr_clear(efi_load_option *opt, uint16_t attr)
 {
 	opt->attributes &= ~attr;
 }
 
-uint16_t
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+uint16_t NONNULL(1) PUBLIC
 /* limit here is the /whole/ load option */
 efi_loadopt_pathlen(efi_load_option *opt, ssize_t limit)
 {
@@ -184,9 +202,7 @@ efi_loadopt_pathlen(efi_load_option *opt, ssize_t limit)
 	return len;
 }
 
-efidp
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
+efidp NONNULL(1) PUBLIC
 /* limit here is the /whole/ load option */
 efi_loadopt_path(efi_load_option *opt, ssize_t limit)
 {
@@ -216,9 +232,7 @@ efi_loadopt_path(efi_load_option *opt, ssize_t limit)
 	return dp;
 }
 
-int
-__attribute__((__nonnull__ (1,3)))
-__attribute__((__visibility__ ("default")))
+int NONNULL(1,3) PUBLIC
 efi_loadopt_optional_data(efi_load_option *opt, size_t opt_size,
 			  unsigned char **datap, size_t *len)
 {
@@ -251,9 +265,7 @@ over_limit:
 	return 0;
 }
 
-ssize_t
-__attribute__((__nonnull__ (3)))
-__attribute__((__visibility__ ("default")))
+ssize_t NONNULL(3) PUBLIC
 efi_loadopt_args_from_file(uint8_t *buf, ssize_t size, char *filename)
 {
 	int rc;
@@ -262,7 +274,7 @@ efi_loadopt_args_from_file(uint8_t *buf, ssize_t size, char *filename)
 	int saved_errno;
 	FILE *f;
 
-	if (!buf && size > 0) {
+	if (!buf && size != 0) {
 		errno = -EINVAL;
 		return -1;
 	}
@@ -275,8 +287,10 @@ efi_loadopt_args_from_file(uint8_t *buf, ssize_t size, char *filename)
 	if (rc < 0)
 		goto err;
 
-	if (size == 0)
+	if (size == 0) {
+		fclose(f);
 		return statbuf.st_size;
+	}
 
 	if (size < statbuf.st_size) {
 		errno = ENOSPC;
@@ -294,13 +308,11 @@ err:
 	return ret;
 }
 
-ssize_t
-__attribute__((__nonnull__ (3)))
-__attribute__((__visibility__ ("default")))
+ssize_t NONNULL(3) PUBLIC
 efi_loadopt_args_as_utf8(uint8_t *buf, ssize_t size, uint8_t *utf8)
 {
 	ssize_t req;
-	if (!buf && size > 0) {
+	if (!buf && size != 0) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -321,9 +333,7 @@ efi_loadopt_args_as_utf8(uint8_t *buf, ssize_t size, uint8_t *utf8)
 	return req;
 }
 
-ssize_t
-__attribute__((__nonnull__ (3)))
-__attribute__((__visibility__ ("default")))
+ssize_t NONNULL(3) PUBLIC
 efi_loadopt_args_as_ucs2(uint16_t *buf, ssize_t size, uint8_t *utf8)
 {
 	ssize_t req;
@@ -346,8 +356,7 @@ efi_loadopt_args_as_ucs2(uint16_t *buf, ssize_t size, uint8_t *utf8)
 
 static unsigned char *last_desc;
 
-static void
-__attribute__((destructor))
+static void DESTRUCTOR
 teardown(void)
 {
 	if (last_desc)
@@ -355,9 +364,7 @@ teardown(void)
 	last_desc = NULL;
 }
 
-__attribute__((__nonnull__ (1)))
-__attribute__((__visibility__ ("default")))
-const unsigned char *
+const unsigned char NONNULL(1) PUBLIC *
 efi_loadopt_desc(efi_load_option *opt, ssize_t limit)
 {
 	if (last_desc) {

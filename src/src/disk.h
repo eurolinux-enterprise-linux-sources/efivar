@@ -21,9 +21,10 @@
 #ifndef _EFIBOOT_DISK_H
 #define _EFIBOOT_DISK_H
 
-extern ssize_t _make_hd_dn(uint8_t *buf, ssize_t size, int fd,
-			   uint32_t partition, uint32_t options)
-	__attribute__((__visibility__ ("hidden")));
+extern bool HIDDEN is_partitioned(int fd);
+
+extern HIDDEN ssize_t _make_hd_dn(uint8_t *buf, ssize_t size, int fd,
+                                  int32_t partition, uint32_t options);
 #define make_hd_dn(buf, size, off, fd, partition, option) \
 	_make_hd_dn(((buf)+(off)), ((size)?((size)-(off)):0), (fd),\
 		    (partition), (options))

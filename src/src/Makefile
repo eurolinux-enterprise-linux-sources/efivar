@@ -1,6 +1,7 @@
 SRCDIR = $(realpath .)
 TOPDIR = $(realpath ..)
 
+include $(TOPDIR)/Make.deprecated
 include $(TOPDIR)/Make.version
 include $(TOPDIR)/Make.rules
 include $(TOPDIR)/Make.defaults
@@ -13,7 +14,8 @@ PCTARGETS=efivar.pc efiboot.pc
 TARGETS=$(LIBTARGETS) $(BINTARGETS) $(PCTARGETS)
 STATICTARGETS=$(STATICLIBTARGETS) $(STATICBINTARGETS)
 
-LIBEFIBOOT_SOURCES = crc32.c creator.c disk.c gpt.c linux.c loadopt.c
+LIBEFIBOOT_SOURCES = crc32.c creator.c disk.c gpt.c loadopt.c path-helpers.c \
+		     linux.c $(wildcard linux-*.c)
 LIBEFIBOOT_OBJECTS = $(patsubst %.c,%.o,$(LIBEFIBOOT_SOURCES))
 LIBEFIVAR_SOURCES = dp.c dp-acpi.c dp-hw.c dp-media.c dp-message.c \
 	efivarfs.c error.c export.c guid.c guids.S guid-symbols.c \
@@ -32,8 +34,14 @@ all : $(TARGETS)
 
 static : $(STATICTARGETS)
 
+abiclean :
+	@rm -vf $(patsubst %.so,%.abixml,$@)
+
+abixml : | $(LIBTARGETS)
+abixml : $(patsubst %.so,%.abixml,$(LIBTARGETS))
+
 abidw : $(patsubst %.so,%.abixml,$(LIBTARGETS))
-	git commit -m "Update .abixml files" -s $^
+	git commit -s --amend $^
 
 abicheck : $(patsubst %.so,%.abicheck,$(LIBTARGETS))
 
@@ -47,6 +55,7 @@ include/efivar/efivar-guids.h : makeguids guids.txt
 makeguids : CPPFLAGS+=-DEFIVAR_BUILD_ENVIRONMENT
 makeguids : LIBS=dl
 makeguids : $(MAKEGUIDS_SOURCES)
+makeguids : CCLD=$(CCLD_FOR_BUILD)
 
 guids.o : guids.S | guids.bin names.bin
 
@@ -62,12 +71,10 @@ libefivar.so : MAP=libefivar.map
 
 efivar : efivar.c | libefivar.so
 efivar : LIBS=efivar dl
-efivar : PKGS=popt
 
 efivar-static : efivar.c $(patsubst %.o,%.static.o,$(LIBEFIVAR_OBJECTS))
 efivar-static : | $(GENERATED_SOURCES)
 efivar-static : LIBS=dl
-efivar-static : PKGS=popt
 
 libefiboot.a : $(patsubst %.o,%.static.o,$(LIBEFIBOOT_OBJECTS))
 
@@ -82,28 +89,28 @@ deps : $(ALL_SOURCES)
 clean : 
 	@rm -rfv *~ *.o *.a *.E *.so *.so.* *.pc *.bin .*.d *.map \
 		makeguids guid-symbols.c include/efivar/efivar-guids.h \
-		$(BINTARGETS)
+		$(TARGETS) $(STATICTARGETS)
 	@# remove the deps files we used to create, as well.
 	@rm -rfv .*.P .*.h.P *.S.P include/efivar/.*.h.P
 
 install : all
-	$(INSTALL) -d -m 755 $(DESTDIR)$(libdir)
+	$(INSTALL) -d -m 755 $(DESTDIR)$(LIBDIR)
 	$(foreach x,$(LIBTARGETS), \
-		$(INSTALL) -m 755 $(x) $(DESTDIR)$(libdir)/$(x).1.$(VERSION) ;\
-		ln -fs $(x).1.$(VERSION) $(DESTDIR)$(libdir)/$(x).1 ;\
-		ln -fs $(x).1.$(VERSION) $(DESTDIR)$(libdir)/$(x) ;\
+		$(INSTALL) -m 755 $(x) $(DESTDIR)$(LIBDIR)/$(x).1.$(VERSION) ;\
+		ln -fs $(x).1.$(VERSION) $(DESTDIR)$(LIBDIR)/$(x).1 ;\
+		ln -fs $(x).1.$(VERSION) $(DESTDIR)$(LIBDIR)/$(x) ;\
 		)
 	$(INSTALL) -d -m 755 $(DESTDIR)$(PCDIR)
 	$(foreach x, $(PCTARGETS), $(INSTALL) -m 644 $(x) $(DESTDIR)$(PCDIR) ;)
-	$(INSTALL) -d -m 755 $(DESTDIR)$(includedir)/efivar
-	$(foreach x, $(wildcard $(TOPDIR)/src/include/efivar/*.h), $(INSTALL) -m 644 $(x) $(DESTDIR)$(includedir)/efivar/$(notdir $(x));)
-	$(INSTALL) -d -m 755 $(DESTDIR)$(bindir)
-	$(foreach x, $(BINTARGETS), $(INSTALL) -m 755 $(x) $(DESTDIR)$(bindir);)
+	$(INSTALL) -d -m 755 $(DESTDIR)$(INCLUDEDIR)/efivar
+	$(foreach x, $(wildcard $(TOPDIR)/src/include/efivar/*.h), $(INSTALL) -m 644 $(x) $(DESTDIR)$(INCLUDEDIR)/efivar/$(notdir $(x));)
+	$(INSTALL) -d -m 755 $(DESTDIR)$(BINDIR)
+	$(foreach x, $(BINTARGETS), $(INSTALL) -m 755 $(x) $(DESTDIR)$(BINDIR);)
 
 test : all
 	$(MAKE) -C test $@
 
-.PHONY: test deps
+.PHONY: test deps abiclean abixml
 .SECONDARY : libefivar.so.1.$(VERSION) libefivar.so.1
 .SECONDARY : libefiboot.so.1.$(VERSION) libefivar.so.1
 .SECONDARY : include/efivar/efivar-guids.h guid-symbols.c

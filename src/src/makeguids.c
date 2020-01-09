@@ -18,6 +18,8 @@
  *
  */
 
+#include "fix_coverity.h"
+
 #include <err.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -26,8 +28,6 @@
 #include <sys/stat.h>
 
 #include "efivar.h"
-#include "util.h"
-#include "guid.h"
 
 efi_guid_t const efi_guid_zero = {0};
 efi_guid_t const efi_guid_empty = {0};
@@ -53,6 +53,43 @@ cmpnamep(const void *p1, const void *p2)
 	struct guidname *gn2 = (struct guidname *)p2;
 
 	return memcmp(gn1->name, gn2->name, sizeof (gn1->name));
+}
+
+struct guid_aliases {
+	char *name;
+	char *alias;
+};
+
+static struct guid_aliases guid_aliases[] = {
+	{ "efi_guid_empty", "efi_guid_zero" },
+	{ "efi_guid_redhat", "efi_guid_fwupdate" },
+	{ NULL, NULL }
+};
+
+static void make_aliases(FILE *symout, FILE *header,
+			 const char *alias, const uint8_t *guid_data)
+{
+	for (unsigned int i = 0; guid_aliases[i].name != NULL; i++) {
+		if (!strcmp(guid_aliases[i].alias, alias)) {
+			fprintf(symout,
+				"\nconst efi_guid_t\n"
+				"\t__attribute__((__visibility__ (\"default\")))\n"
+				"\t%s = {cpu_to_le32(0x%02x%02x%02x%02x),cpu_to_le16(0x%02x%02x),cpu_to_le16(0x%02x%02x),cpu_to_be16(0x%02x%02x),{0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x}};\n\n",
+				guid_aliases[i].name,
+				guid_data[3], guid_data[2],
+				guid_data[1], guid_data[0],
+				guid_data[5], guid_data[4],
+				guid_data[7], guid_data[6],
+				guid_data[8], guid_data[9],
+				guid_data[10], guid_data[11],
+				guid_data[12], guid_data[13],
+				guid_data[14], guid_data[15]);
+
+			fprintf(header,
+				"extern const efi_guid_t %s __attribute__((__visibility__ (\"default\")));\n",
+				guid_aliases[i].name);
+		}
+	}
 }
 
 int
@@ -149,19 +186,19 @@ main(int argc, char *argv[])
 
 	fprintf(header, "#ifndef EFIVAR_GUIDS_H\n#define EFIVAR_GUIDS_H 1\n\n");
 
-	fprintf(symout, "#include <efivar.h>\n");
+	fprintf(symout, "#include <efivar/efivar.h>\n");
 	fprintf(symout, "#include <endian.h>\n");
 	fprintf(symout, """\n\
 #if BYTE_ORDER == BIG_ENDIAN\n\
 #define cpu_to_be32(n) (n)\n\
 #define cpu_to_be16(n) (n)\n\
-#define cpu_to_le32(n) (__bswap_constant_32(n))\n\
-#define cpu_to_le16(n) (__bswap_constant_16(n))\n\
+#define cpu_to_le32(n) (__builtin_bswap32(n))\n\
+#define cpu_to_le16(n) (__builtin_bswap16(n))\n\
 #else\n\
 #define cpu_to_le32(n) (n)\n\
 #define cpu_to_le16(n) (n)\n\
-#define cpu_to_be32(n) (__bswap_constant_32(n))\n\
-#define cpu_to_be16(n) (__bswap_constant_16(n))\n\
+#define cpu_to_be32(n) (__builtin_bswap32(n))\n\
+#define cpu_to_be16(n) (__builtin_bswap16(n))\n\
 #endif\n\
 """);
 
@@ -171,29 +208,22 @@ main(int argc, char *argv[])
 		if (!strcmp(outbuf[i].symbol, "efi_guid_zzignore-this-guid"))
 			break;
 
-		if (!strcmp(outbuf[i].symbol, "efi_guid_zero")) {
-			fprintf(symout, "const efi_guid_t\n"
-				"__attribute__((__visibility__ (\"default\")))\n"
-				"efi_guid_empty = {0x0,0x0,0x0,0x0,{0x0,0x0,0x0,0x0,0x0,0x0}};\n\n");
-		}
-		if (!strcmp(outbuf[i].symbol, "efi_guid_zero")) {
-			fprintf(header, "extern const efi_guid_t efi_guid_empty __attribute__((__visibility__ (\"default\")));\n");
-		}
+		make_aliases(symout, header, outbuf[i].symbol, guid_data);
 
 		fprintf(header, "extern const efi_guid_t %s __attribute__((__visibility__ (\"default\")));\n", outbuf[i].symbol);
 
-		fprintf(symout, "const \n"
+		fprintf(symout, "const\n"
 			"__attribute__((__visibility__ (\"default\")))\n"
 			"efi_guid_t %s = {cpu_to_le32(0x%02x%02x%02x%02x),cpu_to_le16(0x%02x%02x),cpu_to_le16(0x%02x%02x),cpu_to_be16(0x%02x%02x),{0x%02x,0x%02x,0x%02x,0x%02x,0x%02x,0x%02x}};\n\n",
 			outbuf[i].symbol,
 			guid_data[3], guid_data[2],
-			  guid_data[1], guid_data[0],
+			guid_data[1], guid_data[0],
 			guid_data[5], guid_data[4],
 			guid_data[7], guid_data[6],
 			guid_data[8], guid_data[9],
 			guid_data[10], guid_data[11],
-			  guid_data[12], guid_data[13],
-			  guid_data[14], guid_data[15]);
+			guid_data[12], guid_data[13],
+			guid_data[14], guid_data[15]);
 	}
 
 	fprintf(header, "\n#endif /* EFIVAR_GUIDS_H */\n");
@@ -212,6 +242,7 @@ main(int argc, char *argv[])
 	close(in);
 	close(guidout);
 	close(nameout);
+	free(inbuf);
 
 	return 0;
 }

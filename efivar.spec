@@ -1,39 +1,44 @@
 Name:           efivar
-Version:        31
-Release:        4%{?dist}
+Version:        36
+Release:        11%{?dist}
 Summary:        Tools to manage UEFI variables
-License:        LGPLv2.1
+License:        LGPLv2+
 URL:            https://github.com/rhinstaller/efivar
 Requires:       %{name}-libs = %{version}-%{release}
-ExclusiveArch:	x86_64 aarch64
+ExclusiveArch:  x86_64 aarch64
 
 BuildRequires:  popt popt-devel popt-static git glibc-static
 Source0:        https://github.com/rhinstaller/efivar/releases/download/efivar-%{version}/efivar-%{version}.tar.bz2
-Patch0001:	0001-libabigail-isn-t-in-RHEL-yet-so-nerf-the-abi-check.patch
-Patch0002:	0002-Don-t-use-_Generic-because-gcc-4.x-doesn-t-have-it.patch
-Patch0003:	0003-popt-devel-in-RHEL-7.4-doesn-t-provide-popt.pc-so-in.patch
-Patch0004:	0004-efi_loadopt_args_from_file-fix-leaked-file-descripto.patch
-Patch0005:	0005-make_mac_path-fix-leaked-file-descriptor.patch
-Patch0006:	0006-gpt_disk_get_partition_info-free-our-allocations-on-.patch
-Patch0007:	0007-efi_generate_file_device_path-fix-one-error-case-s-f.patch
-Patch0008:	0008-efi_va_generate_file_device_path_from_esp-handle-err.patch
-Patch0009:	0009-efi_variable_import-fix-memory-leak-on-failure-path.patch
-Patch0010:	0010-efidp_append_path-error-check-the-right-variable.patch
-Patch0011:	0011-efi_variable_import-make-sure-var.data_size-is-set.patch
-Patch0012:	0012-makeguids-free-our-input-buffer.patch
-Patch0013:	0013-efi_variable_import-constrain-our-inputs-better.patch
-Patch0014:	0014-efi_loadopt_create-check-buf-for-NULLness.patch
-Patch0015:	0015-efidp_duplicate_extra-error-if-our-allocation-is-too.patch
-Patch0016:	0016-show_errors-make-the-useful-part-here-not-be-dead-co.patch
-Patch0017:	0017-efi_loadopt_args_from_file-make-sure-buf-is-only-NUL.patch
-Patch0018:	0018-calls-to-sysfs_readlink-check-linkbuf-for-NULLness.patch
-Patch0019:	0019-efivar-main-explain-efi_well_known_guids-to-the-comp.patch
-Patch0020:	0020-dp.h-Try-to-make-covscan-believe-format-is-checking-.patch
-Patch0021:	0021-gpt-try-to-avoid-trusting-unverified-partition-table.patch
-Patch0022:	0022-Simplify-efidp_append_node-even-more.patch
-Patch0023:	0023-efi_loadopt_create-avoid-NULL-dereference.patch
-Patch0024:	0024-efi_generate_file_device_path-make-all-error-paths-u.patch
-Patch0025:	0025-linux.c-fix-a-pile-of-sscanf-NULL-.-possibilities.patch
+Patch0001: 0001-libabigail-isn-t-in-RHEL-yet-so-nerf-the-abi-check.patch
+Patch0002: 0002-Move-the-syntastic-file-I-use-out-of-the-repo.patch
+Patch0003: 0003-Move-verbosity-headers-to-be-public.patch
+Patch0004: 0004-Pacify-some-coverity-nits.patch
+Patch0005: 0005-efivar-Fix-some-types-in-L-behavior-to-pacify-coveri.patch
+Patch0006: 0006-Promote-_make_hd_dn-to-make_hd_dn-and-get-rid-of-the.patch
+Patch0007: 0007-Try-to-convince-covscan-that-sysfs_read_file-doesn-t.patch
+Patch0008: 0008-Make-efidp_make_file-have-even-more-better-input-con.patch
+Patch0009: 0009-Make-path-helpers.c-also-import-fix_coverity.h.patch
+Patch0010: 0010-Fix-a-makeguids-building-problem-with-generics.h.patch
+Patch0011: 0011-Improve-ACPI-device-path-formatting.patch
+Patch0012: 0012-Give-linux-s-parse-functions-the-unmodified-device-l.patch
+Patch0013: 0013-Move-ACPI-ID-parsing-to-a-shared-location.patch
+Patch0014: 0014-Make-a-platform-ACPI-root-parser-separate-from-PCI-r.patch
+Patch0015: 0015-Make-a-way-to-say-e-3-isn-t-viable-for-a-kind-of-dev.patch
+Patch0016: 0016-Make-a-linux-device-root-for-SOC-devices-that-use-FD.patch
+Patch0017: 0017-If-we-can-t-parse-part-of-the-device-link-skip-it-an.patch
+Patch0018: 0018-Pacify-clang-analyzer-just-a-little.patch
+Patch0019: 0019-Try-even-harder-to-convince-coverity-that-get_file-i.patch
+Patch0020: 0020-Make-the-debug-code-less-intrusive.patch
+Patch0021: 0021-efiboot-Make-the-device-node-skipping-code-pass-cove.patch
+Patch0022: 0022-efiboot-don-t-error-on-unknown-type-with-DEV_ABBREV_.patch
+Patch0023: 0023-efiboot-fix-a-bad-error-check.patch
+Patch0024: 0024-efiboot-parse_scsi_link-fix-the-offset-searching-for.patch
+Patch0025: 0025-Coverity-still-doesn-t-believe-in-error-codes.patch
+Patch0026: 0026-Don-t-require-NVME-to-have-an-EUI.patch
+Patch0027: 0027-Fix-another-buggy-fake-acpi-pci-root-driver.patch
+Patch0028: 0028-Fix-dev-probes-intialization-test.patch
+Patch0029: 0029-Deal-with-devices-that-don-t-have-a-device-link-in-s.patch
+Patch0030: 0030-Handle-partition-name-parsing-and-formatting-for-par.patch
 
 %description
 efivar provides a simple command line interface to the UEFI variable facility.
@@ -94,6 +99,63 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.so.*
 
 %changelog
+* Mon Sep 17 2018 Peter Jones <pjones@redhat.com> - 36-11
+- Fix device probing with no matching probes where HD() will work
+  Resolves: rhbz#1613698
+- Detect partitiond md devices correctly
+  Resolves: rhbz#1602414
+  Resolves: rhbz#1613370
+
+* Mon Sep 10 2018 Peter Jones <pjones@redhat.com> - 36-10
+- Work around platform ACPI PCI(e) root drivers that don't fill in the
+  "driver" symlink in sysfs.
+  Resolves: rhbz#1614944
+
+* Mon Jul 16 2018 Peter Jones <pjones@redhat.com> - 36-9
+- Don't require NVME to have an EUI
+  Resolves: rhbz#1593784
+
+* Thu Jun 21 2018 Peter Jones <pjones@redhat.com> - 36-8
+- Fix another minor covscan complaint
+  Related: rhbz#1558937
+  Related: rhbz#1591853
+
+* Thu Jun 21 2018 Peter Jones <pjones@redhat.com> - 36-7
+- Fix a couple more weird Aarch64 machines
+  Related: rhbz#1558937
+  Resolves: rhbz#1591853
+
+* Wed Jun 20 2018 Peter Jones <pjones@redhat.com> - 36-6
+- Fix device path generation for block devices on nonstandard device path
+  roots.
+  Related: rhbz#1558937
+  Resolves: rhbz#1591853
+
+* Thu Jun 14 2018 Peter Jones <pjones@redhat.com> - 36-5
+- Try to fix some minor coverity nits.
+  Related: rhbz#1520533
+  Related: rhbz#1570032
+
+* Wed Jun 13 2018 Peter Jones <pjones@redhat.com> - 36-4
+- Try to fix some minor coverity nits.
+  Related: rhbz#1520533
+  Related: rhbz#1570032
+
+* Tue Jun 12 2018 Peter Jones <pjones@redhat.com> - 36-3
+- Try to fix some minor coverity nits.
+  Related: rhbz#1520533
+  Related: rhbz#1570032
+
+* Sat Jun 09 2018 Peter Jones <pjones@redhat.com> - 36-2
+- Minor specfile cleanup to pacify rpmdiff
+  Related: rhbz#1520533
+  Related: rhbz#1570032
+
+* Fri Jun 08 2018 Peter Jones <pjones@redhat.com> - 36-1
+- Rebase to efivar 36
+  Resolves: rhbz#1520533
+  Related: rhbz#1570032
+
 * Tue May 09 2017 Peter Jones <pjones@redhat.com> - 31-4
 - Fix a bunch of coverity issues.
   Related: rhbz#1380825

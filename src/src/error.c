@@ -18,6 +18,9 @@
  * <http://www.gnu.org/licenses/>.
  *
  */
+
+#include "fix_coverity.h"
+
 #include <errno.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -25,12 +28,16 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "efiboot.h"
+
 /*
- * GCC complains that we check for null if we have a nonnull attribute, even
- * though older or other compilers might just ignore that attribute if they
- * don't support it.  Ugh.
+ * GCC/Clang complains that we check for null if we have a nonnull attribute,
+ * even though older or other compilers might just ignore that attribute if
+ * they don't support it.  Ugh.
  */
-#if defined(__GNUC__) && __GNUC__ >= 6
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wpointer-bool-conversion"
+#elif defined(__GNUC__) && __GNUC__ >= 6
 #pragma GCC diagnostic ignored "-Wnonnull-compare"
 #endif
 
@@ -45,9 +52,7 @@ typedef struct {
 static error_table_entry *error_table;
 static unsigned int current;
 
-int
-__attribute__((__visibility__ ("default")))
-__attribute__((__nonnull__ (2, 3, 4, 5, 6)))
+int PUBLIC NONNULL(2, 3, 4, 5, 6)
 efi_error_get(unsigned int n,
 	      char ** const filename,
 	      char ** const function,
@@ -73,10 +78,7 @@ efi_error_get(unsigned int n,
 	return 1;
 }
 
-int
-__attribute__((__visibility__ ("default")))
-__attribute__((__nonnull__ (1, 2, 5)))
-__attribute__((__format__ (printf, 5, 6)))
+int PUBLIC NONNULL(1, 2, 5) PRINTF(5, 6)
 efi_error_set(const char *filename,
 	      const char *function,
 	      int line,
@@ -134,9 +136,7 @@ err:
 	return -1;
 }
 
-void
-__attribute__((__visibility__ ("default")))
-__attribute__((destructor))
+void PUBLIC DESTRUCTOR
 efi_error_clear(void)
 {
 	if (error_table) {
@@ -156,4 +156,29 @@ efi_error_clear(void)
 	}
 	error_table = NULL;
 	current = 0;
+}
+
+static int efi_verbose;
+static FILE *efi_errlog;
+
+FILE PUBLIC *
+efi_get_logfile(void)
+{
+	if (efi_errlog)
+		return efi_errlog;
+	return stderr;
+}
+
+void PUBLIC
+efi_set_verbose(int verbosity, FILE *errlog)
+{
+	efi_verbose = verbosity;
+	if (errlog)
+		efi_errlog = errlog;
+}
+
+int PUBLIC
+efi_get_verbose(void)
+{
+	return efi_verbose;
 }

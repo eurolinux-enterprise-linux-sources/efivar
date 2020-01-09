@@ -26,7 +26,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <efivar.h>
+#include <efivar/efivar.h>
 
 #define TEST_GUID EFI_GUID(0x84be9c3e,0x8a32,0x42c0,0x891c,0x4c,0xd3,0xb0,0x72,0xbe,0xcc)
 
@@ -135,6 +135,11 @@ int do_test(struct test *test)
 	rc = efi_get_variable_size(TEST_GUID, test->name, &datasize);
 	if (rc < 0)
 		report_error(test, ret, rc, "get size test failed: %m\n");
+
+	printf("testing efi_get_variable_exists()\n");
+	rc = efi_get_variable_exists(TEST_GUID, test->name);
+	if (rc < 0)
+		report_error(test, ret, rc, "get exists test failed: %m\n");
 
 	if (datasize != test->size)
 		report_error(test, ret, -1, "get size test failed: wrong size: %zd should be %zd\n", datasize, test->size);

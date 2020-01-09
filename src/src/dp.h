@@ -28,11 +28,17 @@
 #include "ucs2.h"
 
 #define format(buf, size, off, dp_type, fmt, args...) ({		\
-		ssize_t _x = 0;						\
-		if ((off) >= 0) {					\
-			_x = snprintf(((buf)+(off)),			\
-			       ((size)?((size)-(off)):0),		\
-			       fmt, ## args);				\
+		ssize_t _insize = 0;					\
+		void *_inbuf = NULL;					\
+		if ((buf) != NULL && (size) > 0) {			\
+			_inbuf = (buf) + (off);				\
+			_insize = (size) - (off);			\
+		}							\
+		if ((off) >= 0 &&					\
+		    ((buf == NULL && _insize == 0) ||			\
+		     (buf != NULL && _insize >= 0))) {			\
+			ssize_t _x = 0;					\
+			_x = snprintf(_inbuf, _insize, fmt, ## args);	\
 			if (_x < 0) {					\
 				efi_error(				\
 					"could not build %s DP string",	\
@@ -78,13 +84,14 @@
 		_rc;							\
 	})
 
-static inline ssize_t
-__attribute__((__unused__))
-format_hex_helper(char *buf, size_t size, const char *dp_type,
-		  const void * const addr, const size_t len)
+static inline ssize_t UNUSED
+format_hex_helper(char *buf, size_t size, const char *dp_type, char *separator,
+		  int stride, const void * const addr, const size_t len)
 {
 	ssize_t off = 0;
 	for (size_t i = 0; i < len; i++) {
+		if (i && separator && stride > 0 && i % stride == 0)
+			format(buf, size, off, dp_type, "%s", separator);
 		format(buf, size, off, dp_type, "%02x",
 		       *((const unsigned char * const )addr+i));
 	}
@@ -92,10 +99,14 @@ format_hex_helper(char *buf, size_t size, const char *dp_type,
 }
 
 #define format_hex(buf, size, off, dp_type, addr, len)			\
-	format_helper(format_hex_helper, buf, size, off, dp_type, addr, len)
+	format_helper(format_hex_helper, buf, size, off, dp_type, "", 0, \
+		      addr, len)
 
-static inline ssize_t
-__attribute__((__unused__))
+#define format_hex_separated(buf, size, off, dp_type, sep, stride, addr, len) \
+	format_helper(format_hex_helper, buf, size, off, dp_type, sep, stride, \
+		      addr, len)
+
+static inline ssize_t UNUSED
 format_vendor_helper(char *buf, size_t size, char *label, const_efidp dp)
 {
 	ssize_t off = 0;
@@ -118,10 +129,13 @@ format_vendor_helper(char *buf, size_t size, char *label, const_efidp dp)
 	format_helper(format_vendor_helper, buf, size, off, label, dp)
 
 #define format_ucs2(buf, size, off, dp_type, str, len) ({		\
-		uint16_t _ucs2buf[(len)];				\
-		memset(_ucs2buf, '\0', sizeof (_ucs2buf));		\
-		memcpy(_ucs2buf, str, sizeof (_ucs2buf)			\
-				      - sizeof (_ucs2buf[0]));		\
+		uint16_t *_ucs2buf;					\
+		uint32_t _ucs2size = sizeof(uint16_t) * len;		\
+		_ucs2buf = alloca(_ucs2size);				\
+		if (_ucs2buf == NULL)					\
+			return -1;					\
+		memset(_ucs2buf, '\0', _ucs2size);			\
+		memcpy(_ucs2buf, str, _ucs2size - sizeof(uint16_t));	\
 		unsigned char *_asciibuf;				\
 		_asciibuf = ucs2_to_utf8(_ucs2buf, (len) - 1);		\
 		if (_asciibuf == NULL)					\

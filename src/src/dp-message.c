@@ -18,23 +18,35 @@
  *
  */
 
+#include "fix_coverity.h"
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stddef.h>
 
-#include <efivar.h>
-#include "efivar_endian.h"
-#include "dp.h"
+#include "efivar.h"
 
 static ssize_t
-format_ipv6_port_helper(char *buf, size_t size,
-			uint8_t const *ipaddr, uint16_t port)
+format_ipv4_addr_helper(char *buf, size_t size, const char *dp_type,
+			const uint8_t *ipaddr, int32_t port)
+{
+	ssize_t off = 0;
+	format(buf, size, off, dp_type, "%hhu.%hhu.%hhu.%hhu",
+	       ipaddr[0], ipaddr[1], ipaddr[2], ipaddr[3]);
+	if (port > 0)
+		format(buf, size, off, dp_type, ":%hu", (uint16_t)port);
+	return off;
+}
+
+static ssize_t
+format_ipv6_addr_helper(char *buf, size_t size, const char *dp_type,
+			const uint8_t *ipaddr, int32_t port)
 {
 	uint16_t *ip = (uint16_t *)ipaddr;
 	ssize_t off = 0;
 
-	format(buf, size, off, "IPv6", "[");
+	format(buf, size, off, dp_type, "[");
 
 	// deciding how to print an ipv6 ip requires 2 passes, because
 	// RFC5952 says we have to use :: a) only once and b) to maximum effect.
@@ -69,36 +81,69 @@ format_ipv6_port_helper(char *buf, size_t size,
 	if (this_zero_block_size > largest_zero_block_size) {
 		largest_zero_block_size = this_zero_block_size;
 		largest_zero_block_offset = this_zero_block_offset;
+		/*
+		 * clang-analyzer hates these because they're the last use,
+		 * and they don't believe in writing code so that bugs won't
+		 * be introduced later...
+		 */
+#if 0
 		this_zero_block_size = 0;
 		this_zero_block_offset = -1;
 		in_zero_block = 0;
+#endif
 	}
 	if (largest_zero_block_size == 1)
 		largest_zero_block_offset = -1;
 
 	for (i = 0; i < 8; i++) {
 		if (largest_zero_block_offset == i) {
-			format(buf, size, off, "IPv6", "::");
+			format(buf, size, off, "dp_type", "::");
 			i += largest_zero_block_size -1;
 			continue;
 		} else if (i > 0) {
-			format(buf, size, off, "IPv6", ":");
+			format(buf, size, off, "dp_type", ":");
 		}
 
-		format(buf, size, off, "IPv6", "%x", ip[i]);
+		format(buf, size, off, "dp_type", "%x", ip[i]);
 	}
 
-	format(buf, size, off, "IPv6", "]:%d", port);
+	format(buf, size, off, "dp_type", "]");
+	if (port >= 0)
+		format(buf, size, off, "Ipv6", ":%hu", (uint16_t)port);
 
 	return off;
 }
 
-#define format_ipv6_port(buf, size, off, ipaddr, port)			\
-	format_helper(format_ipv6_port_helper, buf, size, off, ipaddr, port)
+#define format_ipv4_addr(buf, size, off, addr, port)		\
+	format_helper(format_ipv4_addr_helper, buf, size, off,	\
+		      "IPv4", addr, port)
+
+#define format_ipv6_addr(buf, size, off, addr, port)		\
+	format_helper(format_ipv6_addr_helper, buf, size, off,	\
+		      "IPv6", addr, port)
+
+static ssize_t
+format_ip_addr_helper(char *buf, size_t size,
+		      const char *dp_type UNUSED,
+		      int is_ipv6, const efi_ip_addr_t *addr)
+{
+	ssize_t off = 0;
+	if (is_ipv6)
+		format_helper(format_ipv6_addr_helper, buf, size, off, "IPv6",
+			      (const uint8_t *)&addr->v6, -1);
+	else
+		format_helper(format_ipv4_addr_helper, buf, size, off, "IPv4",
+			      (const uint8_t *)&addr->v4, -1);
+	return off;
+}
+
+#define format_ip_addr(buf, size, off, dp_type, is_ipv6, addr)		\
+	format_helper(format_ip_addr_helper, buf, size, off,		\
+		      dp_type, is_ipv6, addr)
 
 static ssize_t
 format_uart(char *buf, size_t size,
-	    const char *dp_type __attribute__((__unused__)),
+	    const char *dp_type UNUSED,
 	    const_efidp dp)
 {
 	uint32_t value;
@@ -118,7 +163,7 @@ format_uart(char *buf, size_t size,
 
 static ssize_t
 format_sas(char *buf, size_t size,
-	   const char *dp_type __attribute__((__unused__)),
+	   const char *dp_type UNUSED,
 	   const_efidp dp)
 {
 	ssize_t off = 0;
@@ -188,7 +233,7 @@ format_sas(char *buf, size_t size,
 
 static ssize_t
 format_usb_class(char *buf, size_t size,
-		 const char *dp_type __attribute__((__unused__)),
+		 const char *dp_type UNUSED,
 		 const_efidp dp)
 {
 	ssize_t off = 0;
@@ -335,14 +380,13 @@ _format_message_dn(char *buf, size_t size, const_efidp dp)
 		break;
 	case EFIDP_MSG_IPv4: {
 		efidp_ipv4_addr const *a = &dp->ipv4_addr;
-		format(buf, size, off, "IPv4",
-	"IPv4(%hhu.%hhu.%hhu.%hhu:%hu<->%hhu.%hhu.%hhu.%hhu:%hu,%hx,%hhx)",
-			    a->local_ipv4_addr[0], a->local_ipv4_addr[1],
-			    a->local_ipv4_addr[2], a->local_ipv4_addr[3],
-			    a->local_port, a->remote_ipv4_addr[0],
-			    a->remote_ipv4_addr[1], a->remote_ipv4_addr[2],
-			    a->remote_ipv4_addr[3], a->remote_port,
-			    a->protocol, a->static_ip_addr);
+		format(buf, size, off, "IPv4", "IPv4(");
+		format_ipv4_addr(buf, size, off,
+				 a->local_ipv4_addr, a->local_port);
+		format_ipv4_addr(buf, size, off,
+				 a->remote_ipv4_addr, a->remote_port);
+		format(buf, size, off, "IPv4", ",%hx,%hhx)",
+		       a->protocol, a->static_ip_addr);
 		break;
 			     }
 	case EFIDP_MSG_VENDOR: {
@@ -350,7 +394,7 @@ _format_message_dn(char *buf, size_t size, const_efidp dp)
 			efi_guid_t guid;
 			char label[40];
 			ssize_t (*formatter)(char *buf, size_t size,
-				const char *dp_type __attribute__((__unused__)),
+				const char *dp_type UNUSED,
 				const_efidp dp);
 		} subtypes[] = {
 			{ .guid = EFIDP_PC_ANSI_GUID,
@@ -374,7 +418,7 @@ _format_message_dn(char *buf, size_t size, const_efidp dp)
 		};
 		char *label = NULL;
 		ssize_t (*formatter)(char *buf, size_t size,
-			const char *dp_type __attribute__((__unused__)),
+			const char *dp_type UNUSED,
 			const_efidp dp) = NULL;
 
 		for (int i = 0; !efi_guid_is_zero(&subtypes[i].guid); i++) {
@@ -416,28 +460,28 @@ _format_message_dn(char *buf, size_t size, const_efidp dp)
 		ssize_t tmpoff = 0;
 		ssize_t sz;
 
-		sz = format_ipv6_port(addr0, 0, tmpoff, a->local_ipv6_addr,
+		sz = format_ipv6_addr(addr0, 0, tmpoff, a->local_ipv6_addr,
 				      a->local_port);
 		if (sz < 0)
 			return -1;
 		addr0 = alloca(sz+1);
 		tmpoff = 0;
-		sz = format_ipv6_port(addr1, 0, tmpoff, a->remote_ipv6_addr,
+		sz = format_ipv6_addr(addr1, 0, tmpoff, a->remote_ipv6_addr,
 				      a->remote_port);
 		if (sz < 0)
 			return -1;
 		addr1 = alloca(sz+1);
 
 		tmpoff = 0;
-		format_ipv6_port(addr0, sz, tmpoff, a->local_ipv6_addr,
-				      a->local_port);
+		format_ipv6_addr(addr0, sz, tmpoff, a->local_ipv6_addr,
+				 a->local_port);
 
 		tmpoff = 0;
-		format_ipv6_port(addr1, sz, tmpoff, a->remote_ipv6_addr,
-				      a->remote_port);
+		format_ipv6_addr(addr1, sz, tmpoff, a->remote_ipv6_addr,
+				 a->remote_port);
 
 		format(buf, size, off, "IPv6", "IPv6(%s<->%s,%hx,%hhx)",
-			     addr0, addr1, a->protocol, a->ip_addr_origin);
+		       addr0, addr1, a->protocol, a->ip_addr_origin);
 		break;
 			     }
 	case EFIDP_MSG_UART: {
@@ -547,6 +591,49 @@ _format_message_dn(char *buf, size_t size, const_efidp dp)
 	case EFIDP_MSG_SD:
 		format(buf, size, off, "SD", "SD(%d)", dp->sd.slot_number);
 		break;
+	case EFIDP_MSG_BT:
+		format(buf, size, off, "Bluetooth", "Bluetooth(");
+		format_hex_separated(buf, size, off, "Bluetooth", ":", 1,
+				     dp->bt.addr, sizeof(dp->bt.addr));
+		format(buf, size, off, "Bluetooth", ")");
+		break;
+	case EFIDP_MSG_WIFI:
+		format(buf, size, off, "Wi-Fi", "Wi-Fi(");
+		format_hex_separated(buf, size, off, "Wi-Fi", ":", 1,
+				     dp->wifi.ssid, sizeof(dp->wifi.ssid));
+		format(buf, size, off, "Wi-Fi", ")");
+		break;
+	case EFIDP_MSG_EMMC:
+		format(buf, size, off, "eMMC", "eMMC(%d)", dp->emmc.slot);
+		break;
+	case EFIDP_MSG_BTLE:
+		format(buf, size, off, "BluetoothLE", "BluetoothLE(");
+		format_hex_separated(buf, size, off, "BluetoothLE", ":", 1,
+				     dp->btle.addr, sizeof(dp->btle.addr));
+		format(buf, size, off, "BluetoothLE", ",%d)",
+		       dp->btle.addr_type);
+		break;
+	case EFIDP_MSG_DNS: {
+		int end = (efidp_node_size(dp)
+			   - sizeof(dp->dns.header)
+			   - sizeof(dp->dns.is_ipv6)
+			  ) / sizeof(efi_ip_addr_t);
+		format(buf, size, off, "Dns", "Dns(");
+		for (int i=0; i < end; i++) {
+			const efi_ip_addr_t *addr = &dp->dns.addrs[i];
+			if (i != 0)
+				format(buf, size, off, "Dns", ",");
+			format_ip_addr(buf, size, off, "Dns",
+				       dp->dns.is_ipv6, addr);
+		}
+		format(buf, size, off, "Dns", ")");
+		break;
+	}
+	case EFIDP_MSG_NVDIMM:
+		format(buf, size, off, "NVDIMM", "NVDIMM(");
+		format_guid(buf, size, off, "NVDIMM", &dp->nvdimm.uuid);
+		format(buf, size, off, "NVDIMM", ")");
+		break;
 	default:
 		format(buf, size, off, "Msg", "Msg(%d,", dp->subtype);
 		format_hex(buf, size, off, "Msg", (uint8_t *)dp+4,
@@ -557,8 +644,7 @@ _format_message_dn(char *buf, size_t size, const_efidp dp)
 	return off;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_mac_addr(uint8_t *buf, ssize_t size, uint8_t if_type,
 		    const uint8_t * const mac_addr, ssize_t mac_addr_size)
 {
@@ -579,8 +665,7 @@ efidp_make_mac_addr(uint8_t *buf, ssize_t size, uint8_t if_type,
 	return sz;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_ipv4(uint8_t *buf, ssize_t size, uint32_t local, uint32_t remote,
 		uint32_t gateway, uint32_t netmask,
 		uint16_t local_port, uint16_t remote_port,
@@ -609,8 +694,7 @@ efidp_make_ipv4(uint8_t *buf, ssize_t size, uint32_t local, uint32_t remote,
 	return sz;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_scsi(uint8_t *buf, ssize_t size, uint16_t target, uint16_t lun)
 {
 	efidp_scsi *scsi = (efidp_scsi *)buf;
@@ -628,8 +712,7 @@ efidp_make_scsi(uint8_t *buf, ssize_t size, uint16_t target, uint16_t lun)
 	return sz;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_nvme(uint8_t *buf, ssize_t size, uint32_t namespace_id,
 		uint8_t *ieee_eui_64)
 {
@@ -655,8 +738,7 @@ efidp_make_nvme(uint8_t *buf, ssize_t size, uint32_t namespace_id,
 	return sz;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_sata(uint8_t *buf, ssize_t size, uint16_t hba_port,
 		int16_t port_multiplier_port, uint16_t lun)
 {
@@ -678,8 +760,7 @@ efidp_make_sata(uint8_t *buf, ssize_t size, uint16_t hba_port,
 	return sz;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_atapi(uint8_t *buf, ssize_t size, uint16_t primary,
 		uint16_t slave, uint16_t lun)
 {
@@ -702,8 +783,7 @@ efidp_make_atapi(uint8_t *buf, ssize_t size, uint16_t primary,
 }
 
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_sas(uint8_t *buf, ssize_t size, uint64_t sas_address)
 {
 	efidp_sas *sas = (efidp_sas *)buf;
@@ -720,6 +800,25 @@ efidp_make_sas(uint8_t *buf, ssize_t size, uint64_t sas_address)
 		sas->device_topology_info = 0;
 		sas->drive_bay_id = 0;
 		sas->rtp = 0;
+	}
+
+	if (sz < 0)
+		efi_error("efidp_make_generic failed");
+
+	return sz;
+}
+
+ssize_t PUBLIC
+efidp_make_nvdimm(uint8_t *buf, ssize_t size, efi_guid_t *uuid)
+{
+	efidp_nvdimm *nvdimm = (efidp_nvdimm *)buf;
+	ssize_t req = sizeof (*nvdimm);
+	ssize_t sz;
+
+	sz = efidp_make_generic(buf, size, EFIDP_MESSAGE_TYPE,
+				EFIDP_MSG_NVDIMM, sizeof (*nvdimm));
+	if (size && sz == req) {
+		memcpy(&nvdimm->uuid, uuid, sizeof(*uuid));
 	}
 
 	if (sz < 0)

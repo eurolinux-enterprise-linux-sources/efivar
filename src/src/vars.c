@@ -17,6 +17,9 @@
  * <http://www.gnu.org/licenses/>.
  *
  */
+
+#include "fix_coverity.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -28,9 +31,7 @@
 #include <sys/types.h>
 #include <sys/utsname.h>
 
-#include "lib.h"
-#include "generics.h"
-#include "util.h"
+#include "efivar.h"
 
 static const char default_vars_path[] = "/sys/firmware/efi/vars/";
 
@@ -55,7 +56,7 @@ typedef struct efi_kernel_variable_32_t {
 	uint8_t		Data[1024];
 	uint32_t	Status;
 	uint32_t	Attributes;
-} __attribute__((packed)) efi_kernel_variable_32_t;
+} PACKED efi_kernel_variable_32_t;
 
 typedef struct efi_kernel_variable_64_t {
 	uint16_t	VariableName[1024/sizeof(uint16_t)];
@@ -64,7 +65,7 @@ typedef struct efi_kernel_variable_64_t {
 	uint8_t		Data[1024];
 	uint64_t	Status;
 	uint32_t	Attributes;
-} __attribute__((packed)) efi_kernel_variable_64_t;
+} PACKED efi_kernel_variable_64_t;
 
 static ssize_t
 get_file_data_size(int dfd, char *name)
@@ -302,23 +303,37 @@ vars_get_variable(efi_guid_t guid, const char *name, uint8_t **data,
 	int ret = -1;
 	uint8_t *buf = NULL;
 	size_t bufsize = -1;
-	char *path;
-	int rc = asprintf(&path, "%s%s-" GUID_FORMAT "/raw_var",
+	char *path = NULL;
+	int rc;
+	int fd = -1;
+	int ratelimit;
+
+	/*
+	 * The kernel rate limiter hits us if we go faster than 100 efi
+	 * variable reads per second as non-root.  So if we're not root, just
+	 * delay this long after each read.  The user is not going to notice.
+	 *
+	 * 1s / 100 = 10000us.
+	 */
+	ratelimit = geteuid() == 0 ? 0 : 10000;
+
+	rc = asprintf(&path, "%s%s-" GUID_FORMAT "/raw_var",
 			  get_vars_path(),
 			  name, guid.a, guid.b, guid.c, bswap_16(guid.d),
 			  guid.e[0], guid.e[1], guid.e[2],
 			  guid.e[3], guid.e[4], guid.e[5]);
 	if (rc < 0) {
 		efi_error("asprintf failed");
-		return -1;
+		goto err;
 	}
 
-	int fd = open(path, O_RDONLY);
+	fd = open(path, O_RDONLY);
 	if (fd < 0) {
 		efi_error("open(%s, O_RDONLY) failed", path);
 		goto err;
 	}
 
+	usleep(ratelimit);
 	rc = read_file(fd, &buf, &bufsize);
 	if (rc < 0) {
 		efi_error("read_file(%s) failed", path);
@@ -389,22 +404,24 @@ vars_del_variable(efi_guid_t guid, const char *name)
 {
 	int errno_value;
 	int ret = -1;
-	char *path;
-	int rc = asprintf(&path, "%s%s-" GUID_FORMAT "/raw_var",
+	char *path = NULL;
+	int rc;
+	int fd = -1;
+	uint8_t *buf = NULL;
+	size_t buf_size = 0;
+	char *delvar;
+
+	rc = asprintf(&path, "%s%s-" GUID_FORMAT "/raw_var",
 			  get_vars_path(),
 			  name, guid.a, guid.b, guid.c, bswap_16(guid.d),
 			  guid.e[0], guid.e[1], guid.e[2],
 			  guid.e[3], guid.e[4], guid.e[5]);
 	if (rc < 0) {
 		efi_error("asprintf failed");
-		return -1;
+		goto err;
 	}
 
-	uint8_t *buf = NULL;
-	size_t buf_size = 0;
-	char *delvar;
-
-	int fd = open(path, O_RDONLY);
+	fd = open(path, O_RDONLY);
 	if (fd < 0) {
 		efi_error("open(%s, O_RDONLY) failed", path);
 		goto err;
@@ -529,6 +546,7 @@ vars_set_variable(efi_guid_t guid, const char *name, uint8_t *data,
 	int errno_value;
 	size_t len;
 	int ret = -1;
+	int fd = -1;
 
 	if (strlen(name) > 1024) {
 		efi_error("variable name size is too large (%zd of 1024)",
@@ -550,11 +568,10 @@ vars_set_variable(efi_guid_t guid, const char *name, uint8_t *data,
 			  guid.e[4], guid.e[5]);
 	if (rc < 0) {
 		efi_error("asprintf failed");
-		return -1;
+		goto err;
 	}
 
 	len = rc;
-	int fd = -1;
 
 	if (!access(path, F_OK)) {
 		rc = efi_del_variable(guid, name);

@@ -18,6 +18,8 @@
  *
  */
 
+#include "fix_coverity.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/magic.h>
@@ -31,9 +33,7 @@
 #include <sys/vfs.h>
 #include <unistd.h>
 
-#include "lib.h"
-#include "generics.h"
-#include "util.h"
+#include "efivar.h"
 
 #include <linux/fs.h>
 
@@ -69,7 +69,7 @@ efivarfs_probe(void)
 		rc = statfs(path, &buf);
 		if (rc == 0) {
 			char *tmp;
-			typeof(buf.f_type) magic = EFIVARFS_MAGIC;
+			__typeof__(buf.f_type) magic = EFIVARFS_MAGIC;
 			if (!memcmp(&buf.f_type, &magic, sizeof (magic)))
 				return 1;
 			else
@@ -126,9 +126,25 @@ efivarfs_set_fd_immutable(int fd, int immutable)
 }
 
 static int
+efivarfs_make_fd_mutable(int fd, unsigned long *orig_attrs)
+{
+	unsigned long mutable_attrs = 0;
+
+        *orig_attrs = 0;
+	if (ioctl(fd, FS_IOC_GETFLAGS, orig_attrs) == -1)
+		return -1;
+	if ((*orig_attrs & FS_IMMUTABLE_FL) == 0)
+		return 0;
+        mutable_attrs = *orig_attrs & ~(unsigned long)FS_IMMUTABLE_FL;
+	if (ioctl(fd, FS_IOC_SETFLAGS, &mutable_attrs) == -1)
+		return -1;
+	return 0;
+}
+
+static int
 efivarfs_set_immutable(char *path, int immutable)
 {
-	typeof(errno) error = 0;
+	__typeof__(errno) error = 0;
 	int fd;
 	int rc = 0;
 
@@ -158,7 +174,7 @@ efivarfs_get_variable_size(efi_guid_t guid, const char *name, size_t *size)
 	char *path = NULL;
 	int rc = 0;
 	int ret = -1;
-	typeof(errno) errno_value;
+	__typeof__(errno) errno_value;
 
 	rc = make_efivarfs_path(&path, guid, name);
 	if (rc < 0) {
@@ -212,31 +228,45 @@ static int
 efivarfs_get_variable(efi_guid_t guid, const char *name, uint8_t **data,
 		  size_t *data_size, uint32_t *attributes)
 {
-	typeof(errno) errno_value;
+	__typeof__(errno) errno_value;
 	int ret = -1;
 	size_t size = 0;
 	uint32_t ret_attributes = 0;
 	uint8_t *ret_data;
+	int fd = -1;
+	char *path = NULL;
+	int rc;
+	int ratelimit;
 
-	char *path;
-	int rc = make_efivarfs_path(&path, guid, name);
+	/*
+	 * The kernel rate limiter hits us if we go faster than 100 efi
+	 * variable reads per second as non-root.  So if we're not root, just
+	 * delay this long after each read.  The user is not going to notice.
+	 *
+	 * 1s / 100 = 10000us.
+	 */
+	ratelimit = geteuid() == 0 ? 0 : 10000;
+
+	rc = make_efivarfs_path(&path, guid, name);
 	if (rc < 0) {
 		efi_error("make_efivarfs_path failed");
-		return -1;
+		goto err;
 	}
 
-	int fd = open(path, O_RDONLY);
+	fd = open(path, O_RDONLY);
 	if (fd < 0) {
 		efi_error("open(%s)", path);
 		goto err;
 	}
 
+	usleep(ratelimit);
 	rc = read(fd, &ret_attributes, sizeof (ret_attributes));
 	if (rc < 0) {
 		efi_error("read failed");
 		goto err;
 	}
 
+	usleep(ratelimit);
 	rc = read_file(fd, &ret_data, &size);
 	if (rc < 0) {
 		efi_error("read_file failed");
@@ -276,7 +306,7 @@ efivarfs_del_variable(efi_guid_t guid, const char *name)
 	if (rc < 0)
 		efi_error("unlink failed");
 
-	typeof(errno) errno_value = errno;
+	__typeof__(errno) errno_value = errno;
 	free(path);
 	errno = errno_value;
 
@@ -287,66 +317,146 @@ static int
 efivarfs_set_variable(efi_guid_t guid, const char *name, uint8_t *data,
 		      size_t data_size, uint32_t attributes, mode_t mode)
 {
-	uint8_t buf[sizeof (attributes) + data_size];
-	typeof(errno) errno_value;
+	char *path;
+	size_t alloc_size;
+	uint8_t *buf;
+	int rfd = -1;
+	struct stat rfd_stat;
+	unsigned long orig_attrs = 0;
+	int restore_immutable_fd = -1;
+	int wfd = -1;
+	int open_wflags;
 	int ret = -1;
+	int save_errno;
 
 	if (strlen(name) > 1024) {
-		efi_error("name too long (%zd of 1024)", strlen(name));
 		errno = EINVAL;
+		efi_error("name too long (%zu of 1024)", strlen(name));
 		return -1;
 	}
 
-	char *path;
-	int rc = make_efivarfs_path(&path, guid, name);
-	if (rc < 0) {
+	if (data_size > (size_t)-1 - sizeof (attributes)) {
+		errno = EOVERFLOW;
+		efi_error("data_size too large (%zu)", data_size);
+		return -1;
+	}
+
+	if (make_efivarfs_path(&path, guid, name) < 0) {
 		efi_error("make_efivarfs_path failed");
 		return -1;
 	}
 
-	int fd = -1;
+	alloc_size = sizeof (attributes) + data_size;
+	buf = malloc(alloc_size);
+	if (buf == NULL) {
+		efi_error("malloc(%zu) failed", alloc_size);
+		goto err;
+	}
 
-	if (!access(path, F_OK) && !(attributes & EFI_VARIABLE_APPEND_WRITE)) {
-		rc = efi_del_variable(guid, name);
-		if (rc < 0) {
-			efi_error("efi_del_variable failed");
+	/*
+	 * Open the file first in read-only mode. This is necessary when the
+	 * variable exists and it is also protected -- then we first have to
+	 * *attempt* to clear the immutable flag from the file. For clearing
+	 * the flag, we can only open the file read-only. In other cases,
+	 * opening the file for reading is not necessary, but it doesn't hurt
+	 * either.
+	 */
+	rfd = open(path, O_RDONLY);
+	if (rfd != -1) {
+		/* save the containing device and the inode number for later */
+		if (fstat(rfd, &rfd_stat) == -1) {
+			efi_error("fstat() failed on r/o fd %d", rfd);
+			goto err;
+		}
+
+		/* if the file is indeed immutable, clear and remember it */
+		if (efivarfs_make_fd_mutable(rfd, &orig_attrs) == 0 &&
+		    (orig_attrs & FS_IMMUTABLE_FL))
+			restore_immutable_fd = rfd;
+	}
+
+	/*
+	 * Open the variable file for writing now. First, use O_APPEND
+	 * dependent on the input attributes. Second, the file either doesn't
+	 * exist here, or it does and we made an attempt to make it mutable
+	 * above. If the file was created afresh between the two open()s, then
+	 * we catch that with O_EXCL. If the file was removed between the two
+	 * open()s, we catch that with lack of O_CREAT. If the file was
+	 * *replaced* between the two open()s, we'll catch that later with
+	 * fstat() comparison.
+	 */
+	open_wflags = O_WRONLY;
+	if (attributes & EFI_VARIABLE_APPEND_WRITE)
+		open_wflags |= O_APPEND;
+	if (rfd == -1)
+		open_wflags |= O_CREAT | O_EXCL;
+
+	wfd = open(path, open_wflags, mode);
+	if (wfd == -1) {
+		efi_error("failed to %s %s for %s",
+			  rfd == -1 ? "create" : "open",
+			  path,
+			  ((attributes & EFI_VARIABLE_APPEND_WRITE) ?
+			   "appending" : "writing"));
+		goto err;
+	}
+
+	/*
+	 * If we couldn't open the file for reading, then we have to attempt
+	 * making it mutable now -- in case we created a protected file (for
+	 * writing or appending), then the kernel made it immutable
+	 * immediately, and the write() below would fail otherwise.
+	 */
+	if (rfd == -1) {
+		if (efivarfs_make_fd_mutable(wfd, &orig_attrs) == 0 &&
+		    (orig_attrs & FS_IMMUTABLE_FL))
+			restore_immutable_fd = wfd;
+	} else {
+		/* make sure rfd and wfd refer to the same file */
+		struct stat wfd_stat;
+
+		if (fstat(wfd, &wfd_stat) == -1) {
+			efi_error("fstat() failed on w/o fd %d", wfd);
+			goto err;
+		}
+		if (rfd_stat.st_dev != wfd_stat.st_dev ||
+		    rfd_stat.st_ino != wfd_stat.st_ino) {
+			errno = EINVAL;
+			efi_error("r/o fd %d and w/o fd %d refer to different "
+				  "files", rfd, wfd);
 			goto err;
 		}
 	}
 
-	fd = open(path, O_WRONLY|O_CREAT, mode);
-	if (fd < 0) {
-		efi_error("open(%s, O_WRONLY|O_CREAT, mode) failed", path);
-		goto err;
-	}
-	efivarfs_set_fd_immutable(fd, 0);
-
 	memcpy(buf, &attributes, sizeof (attributes));
 	memcpy(buf + sizeof (attributes), data, data_size);
-#if 0
-		errno = ENOSPC;
-		rc = -1;
-#else
-		rc = write(fd, buf, sizeof (attributes) + data_size);
-#endif
-	if (rc >= 0) {
-		ret = 0;
-		efivarfs_set_fd_immutable(fd, 1);
-	} else {
-		efi_error("write failed");
-		efivarfs_set_fd_immutable(fd, 0);
-		unlink(path);
+
+	if (write(wfd, buf, alloc_size) == -1) {
+		efi_error("writing to fd %d failed", wfd);
+		goto err;
 	}
+
+	/* we're done */
+	ret = 0;
+
 err:
-	errno_value = errno;
+	save_errno = errno;
 
-	if (path)
-		free(path);
+	/* if we're exiting with error and created the file, remove it */
+	if (ret == -1 && rfd == -1 && wfd != -1 && unlink(path) == -1)
+		efi_error("failed to unlink %s", path);
 
-	if (fd >= 0)
-		close(fd);
+	ioctl(restore_immutable_fd, FS_IOC_SETFLAGS, &orig_attrs);
 
-	errno = errno_value;
+        if (wfd >= 0)
+                close(wfd);
+        if (rfd >= 0)
+                close(rfd);
+
+	free(buf);
+	free(path);
+
+	errno = save_errno;
 	return ret;
 }
 

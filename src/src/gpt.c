@@ -22,6 +22,8 @@
  *
  */
 
+#include "fix_coverity.h"
+
 #include <asm/byteorder.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -29,16 +31,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 
-#include <efivar.h>
-
-#include "crc32.h"
-#include "disk.h"
-#include "gpt.h"
-#include "util.h"
+#include "efivar.h"
 
 #ifndef BLKGETLASTSECT
 #define BLKGETLASTSECT _IO(0x12,108) /* get last sector of block device */
@@ -49,8 +47,6 @@ struct blkdev_ioctl_param {
 	size_t content_length;
 	char * block_contents;
 };
-
-static int report_errors;
 
 /**
  * efi_crc32() - EFI version of crc32 function
@@ -85,7 +81,7 @@ is_pmbr_valid(legacy_mbr *mbr)
 	int i, found = 0, signature = 0;
 	if (!mbr)
 		return 0;
-	signature = (__le16_to_cpu(mbr->signature) == MSDOS_MBR_SIGNATURE);
+	signature = (le16_to_cpu(mbr->signature) == MSDOS_MBR_SIGNATURE);
 	for (i = 0; signature && i < 4; i++) {
 		if (mbr->partition[i].os_type ==
 		    EFI_PMBR_OSTYPE_EFI_GPT) {
@@ -182,17 +178,15 @@ last_lba(int filedes)
 	memset(&s, 0, sizeof (s));
 	rc = fstat(filedes, &s);
 	if (rc == -1) {
-		fprintf(stderr, "last_lba() could not stat: %s\n",
-			strerror(errno));
+		efi_error("last_lba() could not stat: %s", strerror(errno));
 		return 0;
 	}
 
 	if (S_ISBLK(s.st_mode)) {
 		sectors = _get_num_sectors(filedes);
 	} else {
-		fprintf(stderr,
-			"last_lba(): I don't know how to handle files with mode %x\n",
-			s.st_mode);
+		efi_error("last_lba(): I don't know how to handle files with mode %x",
+			  s.st_mode);
 		sectors = 1;
 	}
 
@@ -214,8 +208,8 @@ read_lastoddsector(int fd, void *buffer, size_t count)
 	ioctl_param.block_contents = buffer;
 
 	rc = ioctl(fd, BLKGETLASTSECT, &ioctl_param);
-	if (rc == -1 && report_errors)
-		perror("read failed");
+	if (rc == -1)
+		efi_error("read failed");
 
 	return !rc;
 }
@@ -266,11 +260,10 @@ read_lba(int fd, uint64_t lba, void *buffer, size_t bytes)
  * Notes: remember to free pte when you're done!
  */
 static gpt_entry *
-alloc_read_gpt_entries(int fd, gpt_header * gpt)
+alloc_read_gpt_entries(int fd, uint32_t nptes, uint32_t ptesz, uint64_t ptelba)
 {
 	gpt_entry *pte;
-	size_t count = __le32_to_cpu(gpt->num_partition_entries) *
-		__le32_to_cpu(gpt->sizeof_partition_entry);
+	size_t count = nptes * ptesz;
 
 	if (!count)
 		return NULL;
@@ -280,8 +273,7 @@ alloc_read_gpt_entries(int fd, gpt_header * gpt)
 		return NULL;
 
 	memset(pte, 0, count);
-	if (!read_lba(fd, __le64_to_cpu(gpt->partition_entry_lba), pte,
-		      count)) {
+	if (!read_lba(fd, ptelba, pte, count)) {
 		free(pte);
 		return NULL;
 	}
@@ -317,6 +309,63 @@ alloc_read_gpt_header(int fd, uint64_t lba)
 }
 
 /**
+ * validate_nptes(): Tries to ensure that nptes is a reasonable value
+ * @first_block is the beginning LBA to bound the table
+ * @pte_start is the starting LBA of the partition table
+ * @last_block is the end LBA of to bound the table
+ * @ptesz is the size of a partition table entry
+ * @nptes is the number of entries we have.
+ * @blksz is the block size of the device.
+ *
+ * Description: returns 0 if the partition table doesn't fit, 1 if it does
+ */
+static int
+validate_nptes(uint64_t first_block, uint64_t pte_start, uint64_t last_block,
+	       uint32_t ptesz, uint32_t nptes, uint32_t blksz)
+{
+	uint32_t min_entry_size = sizeof(gpt_entry);
+	uint32_t min_entry_size_mod = 128 - sizeof(gpt_entry) % 128;
+	uint64_t max_blocks, max_bytes;
+
+	if (min_entry_size_mod == 128)
+		min_entry_size_mod = 0;
+	min_entry_size += min_entry_size_mod;
+
+	if (ptesz < min_entry_size)
+		return 0;
+
+	if (pte_start < first_block || pte_start > last_block)
+		return 0;
+
+	max_blocks = last_block - pte_start;
+	if (UINT64_MAX / blksz < max_blocks)
+		return 0;
+
+	max_bytes = max_blocks * blksz;
+	if (UINT64_MAX / ptesz < max_bytes)
+		return 0;
+
+	if (ptesz > max_bytes / nptes)
+		return 0;
+
+	if (max_bytes / ptesz < nptes)
+		return 0;
+
+	return 1;
+}
+
+static int
+check_lba(uint64_t lba, uint64_t lastlba, char *name)
+{
+	if (lba > lastlba) {
+		efi_error("Invalid %s LBA %"PRIx64" max:%"PRIx64,
+			  name, lba, lastlba);
+		return 0;
+	}
+	return 1;
+}
+
+/**
  * is_gpt_valid() - tests one GPT header and PTEs for validity
  * @fd  is an open file descriptor to the whole disk
  * @lba is the logical block address of the GPT header to test
@@ -328,10 +377,12 @@ alloc_read_gpt_header(int fd, uint64_t lba)
  */
 static int
 is_gpt_valid(int fd, uint64_t lba,
-	     gpt_header ** gpt, gpt_entry ** ptes)
+	     gpt_header ** gpt, gpt_entry ** ptes,
+	     uint32_t logical_block_size)
 {
 	int rc = 0;		/* default to not valid */
 	uint32_t crc, origcrc;
+	uint64_t max_device_lba = last_lba(fd);
 
 	if (!gpt || !ptes)
 		return 0;
@@ -339,60 +390,123 @@ is_gpt_valid(int fd, uint64_t lba,
 		return 0;
 
 	/* Check the GUID Partition Table signature */
-	if (__le64_to_cpu((*gpt)->signature) != GPT_HEADER_SIGNATURE) {
-		if (report_errors)
-			fprintf(stderr,
-				"GUID Partition Table Header signature is wrong"
-			       ": %" PRIx64" != %" PRIx64 "\n",
-			       (uint64_t)__le64_to_cpu((*gpt)->signature),
-			       GPT_HEADER_SIGNATURE);
+	if (le64_to_cpu((*gpt)->signature) != GPT_HEADER_SIGNATURE) {
+		efi_error("GUID Partition Table Header signature is wrong: %"PRIx64" != %"PRIx64,
+			  (uint64_t)le64_to_cpu((*gpt)->signature),
+			  GPT_HEADER_SIGNATURE);
 		free(*gpt);
 		*gpt = NULL;
 		return rc;
 	}
 
+	uint32_t hdrsz = le32_to_cpu((*gpt)->header_size);
+	uint32_t hdrmin = MAX(92,
+			      sizeof(gpt_header) - sizeof((*gpt)->reserved2));
+	if (hdrsz < hdrmin || hdrsz > logical_block_size) {
+		efi_error("GUID Partition Table Header size is invalid (%d < %d < %d)",
+			  hdrmin, hdrsz, logical_block_size);
+		free (*gpt);
+		*gpt = NULL;
+		return rc;
+	}
+
 	/* Check the GUID Partition Table Header CRC */
-	origcrc = __le32_to_cpu((*gpt)->header_crc32);
+	origcrc = le32_to_cpu((*gpt)->header_crc32);
 	(*gpt)->header_crc32 = 0;
-	crc = efi_crc32(*gpt, __le32_to_cpu((*gpt)->header_size));
+	crc = efi_crc32(*gpt, le32_to_cpu((*gpt)->header_size));
 	if (crc != origcrc) {
-		if (report_errors)
-			fprintf(stderr,
-				"GPTH CRC check failed, %x != %x.\n",
-				origcrc, crc);
-		(*gpt)->header_crc32 = __cpu_to_le32(origcrc);
+		efi_error("GPTH CRC check failed, %x != %x.",
+			  origcrc, crc);
+		(*gpt)->header_crc32 = cpu_to_le32(origcrc);
 		free(*gpt);
 		*gpt = NULL;
 		return 0;
 	}
-	(*gpt)->header_crc32 = __cpu_to_le32(origcrc);
+	(*gpt)->header_crc32 = cpu_to_le32(origcrc);
 
 	/* Check that the my_lba entry points to the LBA
 	 * that contains the GPT we read */
-	if (__le64_to_cpu((*gpt)->my_lba) != lba) {
-		if (report_errors)
-			fprintf(stderr,
-				"my_lba %"PRIx64 "x != lba %"PRIx64 "x.\n",
-				(uint64_t)__le64_to_cpu((*gpt)->my_lba), lba);
+	uint64_t mylba = le64_to_cpu((*gpt)->my_lba);
+	uint64_t altlba = le64_to_cpu((*gpt)->alternate_lba);
+	if (mylba != lba && altlba != lba) {
+		efi_error("lba %"PRIx64" != lba %"PRIx64".",
+			  mylba, lba);
+err:
 		free(*gpt);
 		*gpt = NULL;
 		return 0;
 	}
 
-	if (!(*ptes = alloc_read_gpt_entries(fd, *gpt))) {
+	if (!check_lba(mylba, max_device_lba, "GPT"))
+		goto err;
+
+	if (!check_lba(altlba, max_device_lba, "GPT Alt"))
+		goto err;
+
+	uint64_t ptelba = le64_to_cpu((*gpt)->partition_entry_lba);
+	uint64_t fulba = le64_to_cpu((*gpt)->first_usable_lba);
+	uint64_t lulba = le64_to_cpu((*gpt)->last_usable_lba);
+	uint32_t nptes = le32_to_cpu((*gpt)->num_partition_entries);
+	uint32_t ptesz = le32_to_cpu((*gpt)->sizeof_partition_entry);
+
+	if (!check_lba(ptelba, max_device_lba, "PTE"))
+		goto err;
+	if (!check_lba(fulba, max_device_lba, "First Usable"))
+		goto err;
+	if (!check_lba(lulba, max_device_lba, "Last Usable"))
+		goto err;
+
+	if (ptesz < sizeof(gpt_entry) || ptesz % 128 != 0) {
+		efi_error("Invalid GPT entry size is %d.", ptesz);
+		goto err;
+	}
+
+	/* There's really no good answer to maximum bounds, but this large
+	 * would be completely absurd, so... */
+	if (nptes > 1024) {
+		efi_error("Not honoring insane number of Partition Table Entries 0x%"PRIx32".",
+			  nptes);
+		goto err;
+	}
+
+	if (ptesz > 4096) {
+		efi_error("Not honoring insane Partition Table Entry size 0x%"PRIx32".",
+			  ptesz);
+		goto err;
+	}
+
+	uint64_t pte_blocks;
+	uint64_t firstlba, lastlba;
+
+	if (altlba > mylba) {
+		firstlba = mylba + 1;
+		lastlba = fulba;
+		pte_blocks = fulba - ptelba;
+		rc = validate_nptes(firstlba, ptelba, fulba,
+				    ptesz, nptes, logical_block_size);
+	} else {
+		firstlba = lulba;
+		lastlba = mylba;
+		pte_blocks = mylba - ptelba;
+		rc = validate_nptes(lulba, ptelba, mylba,
+				    ptesz, nptes, logical_block_size);
+	}
+	if (!rc) {
+		efi_error("%"PRIu32" partition table entries with size 0x%"PRIx32" doesn't fit in 0x%"PRIx64" blocks between 0x%"PRIx64" and 0x%"PRIx64".",
+			  nptes, ptesz, pte_blocks, firstlba, lastlba);
+		goto err;
+	}
+
+	if (!(*ptes = alloc_read_gpt_entries(fd, nptes, ptesz, ptelba))) {
 		free(*gpt);
 		*gpt = NULL;
 		return 0;
 	}
 
 	/* Check the GUID Partition Entry Array CRC */
-	crc = efi_crc32(*ptes,
-			__le32_to_cpu((*gpt)->num_partition_entries) *
-			__le32_to_cpu((*gpt)->sizeof_partition_entry));
-	if (crc != __le32_to_cpu((*gpt)->partition_entry_array_crc32)) {
-		if (report_errors)
-		     fprintf(stderr,
-			     "GUID Partitition Entry Array CRC check failed.\n");
+	crc = efi_crc32(*ptes, nptes * ptesz);
+	if (crc != le32_to_cpu((*gpt)->partition_entry_array_crc32)) {
+		efi_error("GUID Partitition Entry Array CRC check failed.");
 		free(*gpt);
 		*gpt = NULL;
 		free(*ptes);
@@ -420,91 +534,78 @@ compare_gpts(gpt_header *pgpt, gpt_header *agpt, uint64_t lastlba)
 	if (!pgpt || !agpt)
 		return;
 
-	if (!report_errors)
-		return;
-
-	if (__le64_to_cpu(pgpt->my_lba) != __le64_to_cpu(agpt->alternate_lba)) {
-		fprintf(stderr,
-		       "GPT:Primary header LBA != Alt. header alternate_lba\n");
-		fprintf(stderr,  "GPT:0x%" PRIx64 " != 0x%" PRIx64 "\n",
-		       (uint64_t)__le64_to_cpu(pgpt->my_lba),
-		       (uint64_t)__le64_to_cpu(agpt->alternate_lba));
+	if (le64_to_cpu(pgpt->my_lba) != le64_to_cpu(agpt->alternate_lba)) {
+		efi_error("GPT:Primary header LBA != Alt. header alternate_lba"
+			  "GPT:0x%" PRIx64 " != 0x%" PRIx64,
+			  (uint64_t)le64_to_cpu(pgpt->my_lba),
+			  (uint64_t)le64_to_cpu(agpt->alternate_lba));
 		error_found++;
 	}
-	if (__le64_to_cpu(pgpt->alternate_lba) != __le64_to_cpu(agpt->my_lba)) {
-		fprintf(stderr,
-		       "GPT:Primary header alternate_lba != Alt. header my_lba\n");
-		fprintf(stderr,  "GPT:0x%" PRIx64 " != 0x%" PRIx64 "\n",
-		       (uint64_t)__le64_to_cpu(pgpt->alternate_lba),
-		       (uint64_t)__le64_to_cpu(agpt->my_lba));
+	if (le64_to_cpu(pgpt->alternate_lba) != le64_to_cpu(agpt->my_lba)) {
+		efi_error("GPT:Primary header alternate_lba != Alt. header my_lba"
+			  "GPT:0x%" PRIx64 " != 0x%" PRIx64,
+			  (uint64_t)le64_to_cpu(pgpt->alternate_lba),
+			  (uint64_t)le64_to_cpu(agpt->my_lba));
 		error_found++;
 	}
-	if (__le64_to_cpu(pgpt->first_usable_lba) !=
-	    __le64_to_cpu(agpt->first_usable_lba)) {
-		fprintf(stderr,  "GPT:first_usable_lbas don't match.\n");
-		fprintf(stderr,  "GPT:0x%" PRIx64 " != 0x%" PRIx64 "\n",
-		       (uint64_t)__le64_to_cpu(pgpt->first_usable_lba),
-		       (uint64_t)__le64_to_cpu(agpt->first_usable_lba));
+	if (le64_to_cpu(pgpt->first_usable_lba) !=
+	    le64_to_cpu(agpt->first_usable_lba)) {
+		efi_error("GPT:first_usable_lbas don't match."
+			  "GPT:0x%" PRIx64 " != 0x%" PRIx64,
+			  (uint64_t)le64_to_cpu(pgpt->first_usable_lba),
+			  (uint64_t)le64_to_cpu(agpt->first_usable_lba));
 		error_found++;
 	}
-	if (__le64_to_cpu(pgpt->last_usable_lba) !=
-	    __le64_to_cpu(agpt->last_usable_lba)) {
-		fprintf(stderr,  "GPT:last_usable_lbas don't match.\n");
-		fprintf(stderr,  "GPT:0x%" PRIx64 " != 0x%" PRIx64 "\n",
-		       (uint64_t)__le64_to_cpu(pgpt->last_usable_lba),
-		       (uint64_t)__le64_to_cpu(agpt->last_usable_lba));
+	if (le64_to_cpu(pgpt->last_usable_lba) !=
+	    le64_to_cpu(agpt->last_usable_lba)) {
+		efi_error("GPT:last_usable_lbas don't match."
+			  "GPT:0x%" PRIx64 " != 0x%" PRIx64,
+			  (uint64_t)le64_to_cpu(pgpt->last_usable_lba),
+			  (uint64_t)le64_to_cpu(agpt->last_usable_lba));
 		error_found++;
 	}
 	if (memcmp(&pgpt->disk_guid, &agpt->disk_guid,
 			sizeof (pgpt->disk_guid))) {
-		fprintf(stderr,  "GPT:disk_guids don't match.\n");
+		efi_error("GPT:disk_guids don't match.");
 		error_found++;
 	}
-	if (__le32_to_cpu(pgpt->num_partition_entries) !=
-	    __le32_to_cpu(agpt->num_partition_entries)) {
-		fprintf(stderr,  "GPT:num_partition_entries don't match: "
-		       "0x%x != 0x%x\n",
-		       __le32_to_cpu(pgpt->num_partition_entries),
-		       __le32_to_cpu(agpt->num_partition_entries));
+	if (le32_to_cpu(pgpt->num_partition_entries) !=
+	    le32_to_cpu(agpt->num_partition_entries)) {
+		efi_error("GPT:num_partition_entries don't match: 0x%x != 0x%x",
+			  le32_to_cpu(pgpt->num_partition_entries),
+			  le32_to_cpu(agpt->num_partition_entries));
 		error_found++;
 	}
-	if (__le32_to_cpu(pgpt->sizeof_partition_entry) !=
-	    __le32_to_cpu(agpt->sizeof_partition_entry)) {
-		fprintf(stderr,
-		       "GPT:sizeof_partition_entry values don't match: "
-		       "0x%x != 0x%x\n",
-		       __le32_to_cpu(pgpt->sizeof_partition_entry),
-		       __le32_to_cpu(agpt->sizeof_partition_entry));
+	if (le32_to_cpu(pgpt->sizeof_partition_entry) !=
+	    le32_to_cpu(agpt->sizeof_partition_entry)) {
+		efi_error("GPT:sizeof_partition_entry values don't match: 0x%x != 0x%x",
+			  le32_to_cpu(pgpt->sizeof_partition_entry),
+			  le32_to_cpu(agpt->sizeof_partition_entry));
 		error_found++;
 	}
-	if (__le32_to_cpu(pgpt->partition_entry_array_crc32) !=
-	    __le32_to_cpu(agpt->partition_entry_array_crc32)) {
-		fprintf(stderr,
-		       "GPT:partition_entry_array_crc32 values don't match: "
-		       "0x%x != 0x%x\n",
-		       __le32_to_cpu(pgpt->partition_entry_array_crc32),
-		       __le32_to_cpu(agpt->partition_entry_array_crc32));
+	if (le32_to_cpu(pgpt->partition_entry_array_crc32) !=
+	    le32_to_cpu(agpt->partition_entry_array_crc32)) {
+		efi_error("GPT:partition_entry_array_crc32 values don't match: 0x%x != 0x%x",
+			  le32_to_cpu(pgpt->partition_entry_array_crc32),
+			  le32_to_cpu(agpt->partition_entry_array_crc32));
 		error_found++;
 	}
-	if (__le64_to_cpu(pgpt->alternate_lba) != lastlba) {
-		fprintf(stderr,
-		       "GPT:Primary header thinks Alt. header is not at the end of the disk.\n");
-		fprintf(stderr,  "GPT:0x%" PRIx64 " != 0x%" PRIx64 "\n",
-		       (uint64_t)__le64_to_cpu(pgpt->alternate_lba), lastlba);
+	if (le64_to_cpu(pgpt->alternate_lba) != lastlba) {
+		efi_error("GPT:Primary header thinks Alt. header is not at the end of the disk."
+			  "GPT:0x%" PRIx64 " != 0x%" PRIx64,
+			  (uint64_t)le64_to_cpu(pgpt->alternate_lba), lastlba);
 		error_found++;
 	}
 
-	if (__le64_to_cpu(agpt->my_lba) != lastlba) {
-		fprintf(stderr,
-		       "GPT:Alternate GPT header not at the end of the disk.\n");
-		fprintf(stderr,  "GPT:0x%" PRIx64 " != 0x%" PRIx64 "\n",
-		       (uint64_t)__le64_to_cpu(agpt->my_lba), lastlba);
+	if (le64_to_cpu(agpt->my_lba) != lastlba) {
+		efi_error("GPT:Alternate GPT header not at the end of the disk."
+			  "GPT:0x%" PRIx64 " != 0x%" PRIx64,
+			  (uint64_t)le64_to_cpu(agpt->my_lba), lastlba);
 		error_found++;
 	}
 
 	if (error_found)
-		fprintf(stderr,
-		       "GPT: Use GNU Parted to correct GPT errors.\n");
+		efi_error("GPT: Use GNU Parted to correct GPT errors.");
 }
 
 /**
@@ -519,7 +620,7 @@ compare_gpts(gpt_header *pgpt, gpt_header *agpt, uint64_t lastlba)
  */
 static int
 find_valid_gpt(int fd, gpt_header ** gpt, gpt_entry ** ptes,
-	       int ignore_pmbr_err)
+	       int ignore_pmbr_err, int logical_block_size)
 {
 	int good_pgpt = 0, good_agpt = 0, good_pmbr = 0;
 	gpt_header *pgpt = NULL, *agpt = NULL;
@@ -535,16 +636,18 @@ find_valid_gpt(int fd, gpt_header ** gpt, gpt_entry ** ptes,
 
 	lastlba = last_lba(fd);
 	good_pgpt = is_gpt_valid(fd, GPT_PRIMARY_PARTITION_TABLE_LBA,
-				 &pgpt, &pptes);
+				 &pgpt, &pptes, logical_block_size);
 	if (good_pgpt) {
 		good_agpt = is_gpt_valid(fd,
-					 __le64_to_cpu(pgpt->alternate_lba),
-					 &agpt, &aptes);
+					 le64_to_cpu(pgpt->alternate_lba),
+					 &agpt, &aptes, logical_block_size);
 		if (!good_agpt) {
-			good_agpt = is_gpt_valid(fd, lastlba, &agpt, &aptes);
+			good_agpt = is_gpt_valid(fd, lastlba, &agpt, &aptes,
+						 logical_block_size);
 		}
 	} else {
-		good_agpt = is_gpt_valid(fd, lastlba, &agpt, &aptes);
+		good_agpt = is_gpt_valid(fd, lastlba, &agpt, &aptes,
+					 logical_block_size);
 	}
 
 	/* The obviously unsuccessful case */
@@ -564,19 +667,15 @@ find_valid_gpt(int fd, gpt_header ** gpt, gpt_entry ** ptes,
 
 	/* Failure due to bad PMBR */
 	if ((good_pgpt || good_agpt) && !good_pmbr && !ignore_pmbr_err) {
-		if (report_errors)
-			fprintf(stderr,
-			      "Primary GPT is invalid, using alternate GPT.\n");
+		efi_error("Primary GPT is invalid, using alternate GPT.");
 		goto fail;
 	}
 
 	/* Would fail due to bad PMBR, but force GPT anyhow */
-	if ((good_pgpt || good_agpt) && !good_pmbr && ignore_pmbr_err &&
-	    report_errors) {
-		fprintf(stderr,
-		 "  Warning: Disk has a valid GPT signature but invalid PMBR.\n"
-		 "  Use GNU Parted to correct disk.\n"
-		 "  gpt option taken, disk treated as GPT.\n");
+	if ((good_pgpt || good_agpt) && !good_pmbr && ignore_pmbr_err) {
+		efi_error("  Warning: Disk has a valid GPT signature but invalid PMBR.\n"
+			  "  Use GNU Parted to correct disk.\n"
+			  "  gpt option taken, disk treated as GPT.");
 	}
 
 	compare_gpts(pgpt, agpt, lastlba);
@@ -628,46 +727,38 @@ find_valid_gpt(int fd, gpt_header ** gpt, gpt_entry ** ptes,
  *  non-zero on failure
  *
  ************************************************************/
-int
-__attribute__((__nonnull__ (3, 4, 5, 6, 7)))
-__attribute__((__visibility__ ("hidden")))
+int NONNULL(3, 4, 5, 6, 7) HIDDEN
 gpt_disk_get_partition_info(int fd, uint32_t num, uint64_t * start,
 			    uint64_t * size, uint8_t *signature,
 			    uint8_t * mbr_type, uint8_t * signature_type,
-			    int ignore_pmbr_error)
+			    int ignore_pmbr_error, int logical_block_size)
 {
 	gpt_header *gpt = NULL;
 	gpt_entry *ptes = NULL, *p;
 	int rc = 0;
 
-	char *report=getenv("LIBEFIBOOT_REPORT_GPT_ERRORS");
-	if (report)
-		report_errors = 1;
-
-	rc = find_valid_gpt(fd, &gpt, &ptes, ignore_pmbr_error);
+	rc = find_valid_gpt(fd, &gpt, &ptes, ignore_pmbr_error,
+			    logical_block_size);
 	if (rc < 0)
 		return rc;
 
 	*mbr_type = 0x02;
 	*signature_type = 0x02;
 
-	if (num > 0 && num <= __le32_to_cpu(gpt->num_partition_entries)) {
+	if (num > 0 && num <= le32_to_cpu(gpt->num_partition_entries)) {
 		p = &ptes[num - 1];
-		*start = __le64_to_cpu(p->starting_lba);
-		*size = __le64_to_cpu(p->ending_lba) -
-			__le64_to_cpu(p->starting_lba) + 1;
+		*start = le64_to_cpu(p->starting_lba);
+		*size = le64_to_cpu(p->ending_lba) -
+			le64_to_cpu(p->starting_lba) + 1;
 		memcpy(signature, &p->unique_partition_guid,
 		       sizeof (p->unique_partition_guid));
 	} else {
-		if (report_errors)
-			fprintf(stderr, "partition %d is not valid\n", num);
+		efi_error("partition %d is not valid", num);
 		errno = EINVAL;
-		return -1;
+		rc = -1;
 	}
-	if (ptes)
-		free(ptes);
-	if (gpt)
-		free(gpt);
+	free(ptes);
+	free(gpt);
 
 	return rc;
 }

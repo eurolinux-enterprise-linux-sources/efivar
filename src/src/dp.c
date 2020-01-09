@@ -18,13 +18,13 @@
  *
  */
 
+#include "fix_coverity.h"
+
 #include <inttypes.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-#include <efivar.h>
-#include "dp.h"
-#include "util.h"
+#include "efivar.h"
 
 static const efidp_header end_entire = {
 	.type = EFIDP_END_TYPE,
@@ -43,8 +43,7 @@ efidp_data_address(const_efidp dp)
 	return (void *)((uint8_t *)dp + sizeof (dp));
 }
 
-int
-__attribute__((__visibility__ ("default")))
+int PUBLIC
 efidp_set_node_data(const_efidp dn, void *buf, size_t bufsize)
 {
 	if (dn->length < 4 || bufsize > (size_t)dn->length - 4) {
@@ -81,6 +80,12 @@ efidp_duplicate_extra(const_efidp dp, efidp *out, size_t extra)
 		return -1;
 	}
 
+	if (plus < (ssize_t)sizeof(efidp_header)) {
+		errno = EINVAL;
+		efi_error("allocation for new device path is smaller than device path header.");
+		return -1;
+	}
+
 	new = calloc(1, plus);
 	if (!new) {
 		efi_error("allocation failed");
@@ -92,8 +97,7 @@ efidp_duplicate_extra(const_efidp dp, efidp *out, size_t extra)
 	return 0;
 }
 
-int
-__attribute__((__visibility__ ("default")))
+int PUBLIC
 efidp_duplicate_path(const_efidp  dp, efidp *out)
 {
 	int rc;
@@ -103,8 +107,7 @@ efidp_duplicate_path(const_efidp  dp, efidp *out)
 	return rc;
 }
 
-int
-__attribute__((__visibility__ ("default")))
+int PUBLIC
 efidp_append_path(const_efidp dp0, const_efidp dp1, efidp *out)
 {
 	ssize_t lsz, rsz, newsz = 0;
@@ -139,7 +142,7 @@ efidp_append_path(const_efidp dp0, const_efidp dp1, efidp *out)
 	}
 
 	rsz = efidp_size(dp1);
-	if (lsz < 0) {
+	if (rsz < 0) {
 		efi_error("efidp_size(dp1) returned error");
 		return -1;
 	}
@@ -166,6 +169,13 @@ efidp_append_path(const_efidp dp0, const_efidp dp1, efidp *out)
 		efi_error("arithmetic overflow computing allocation size");
 		return -1;
 	}
+
+	if (newsz < (ssize_t)sizeof(efidp_header)) {
+		errno = EINVAL;
+		efi_error("allocation for new device path is smaller than device path header.");
+		return -1;
+	}
+
 	new = malloc(newsz);
 	if (!new) {
 		efi_error("allocation failed");
@@ -179,77 +189,41 @@ efidp_append_path(const_efidp dp0, const_efidp dp1, efidp *out)
 	return 0;
 }
 
-int
-__attribute__((__visibility__ ("default")))
+int PUBLIC
 efidp_append_node(const_efidp dp, const_efidp dn, efidp *out)
 {
-	ssize_t lsz, rsz, newsz;
+	ssize_t lsz = 0, rsz = 0, newsz;
 	int rc;
 
-	if (!dp && !dn) {
-		rc = efidp_duplicate_path(
-			(const_efidp)(const efidp_header * const)&end_entire,
-			out);
-		if (rc < 0)
-			efi_error("efidp_duplicate_path() failed");
-		return rc;
-	}
-
-	lsz = efidp_size(dp);
-	if (lsz < 0) {
-		efi_error("efidp_size(dp) returned error");
-		return -1;
-	}
-
-	if (dp && !dn) {
-		rc = efidp_duplicate_path(dp, out);
-		if (rc < 0)
-			efi_error("efidp_duplicate_path() failed");
-		return rc;
-	}
-
-	lsz = efidp_size(dp);
-	if (lsz < 0)
-		return -1;
-
-
-	rsz = efidp_node_size(dn);
-	if (rsz < 0)
-		return -1;
-
-	if (!dp && dn) {
-		if (add(rsz, sizeof(end_entire), &newsz)) {
-			errno = EOVERFLOW;
-			efi_error(
-			  "arithmetic overflow computing allocation size");
-			return -1;
-		}
-		efidp new = malloc(rsz + sizeof (end_entire));
-		if (!new) {
-			efi_error("allocation failed");
+	if (dp) {
+		lsz = efidp_size(dp);
+		if (lsz < 0) {
+			efi_error("efidp_size(dp) returned error");
 			return -1;
 		}
 
-		memcpy(new, dn, dn->length);
-		memcpy((uint8_t *)new + dn->length, &end_entire,
-		       sizeof (end_entire));
-		*out = new;
-		return 0;
+		const_efidp le;
+		le = dp;
+		while (1) {
+			if (efidp_type(le) == EFIDP_END_TYPE &&
+			    efidp_subtype(le) == EFIDP_END_ENTIRE) {
+				ssize_t lesz = efidp_size(le);
+				lsz -= lesz;
+				break;
+			}
+
+			rc = efidp_get_next_end(le, &le);
+			if (rc < 0) {
+				efi_error("efidp_get_next_end() returned error");
+				return -1;
+			}
+		}
 	}
 
-	const_efidp le;
-	le = dp;
-	while (1) {
-		if (efidp_type(le) == EFIDP_END_TYPE &&
-				efidp_subtype(le) == EFIDP_END_ENTIRE) {
-			ssize_t lesz = efidp_size(le);
-			lsz -= lesz;
-			break;
-		}
-
-		rc = efidp_get_next_end(le, &le);
-		if (rc < 0) {
-			efi_error("efidp_get_next_end() returned error");
+	if (dn) {
+		rsz = efidp_node_size(dn);
+		if (rsz < 0) {
+			efi_error("efidp_size(dn) returned error");
 			return -1;
 		}
 	}
@@ -267,15 +241,16 @@ efidp_append_node(const_efidp dp, const_efidp dn, efidp *out)
 	}
 
 	*out = new;
-	memcpy(new, dp, lsz);
-	memcpy((uint8_t *)new + lsz, dn, rsz);
+	if (dp)
+		memcpy(new, dp, lsz);
+	if (dn)
+		memcpy((uint8_t *)new + lsz, dn, rsz);
 	memcpy((uint8_t *)new + lsz + rsz, &end_entire, sizeof (end_entire));
 
 	return 0;
 }
 
-int
-__attribute__((__visibility__ ("default")))
+int PUBLIC
 efidp_append_instance(const_efidp dp, const_efidp dpi, efidp *out)
 {
 	ssize_t lsz, rsz;
@@ -322,8 +297,7 @@ efidp_append_instance(const_efidp dp, const_efidp dpi, efidp *out)
 
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_format_device_path(char *buf, size_t size, const_efidp dp, ssize_t limit)
 {
 	ssize_t off = 0;
@@ -427,30 +401,25 @@ efidp_format_device_path(char *buf, size_t size, const_efidp dp, ssize_t limit)
 	return off+1;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
-efidp_parse_device_node(char *path __attribute__((unused)),
-			efidp out __attribute__((unused)),
-			size_t size __attribute__((unused)))
+ssize_t PUBLIC
+efidp_parse_device_node(char *path UNUSED, efidp out UNUSED,
+                        size_t size UNUSED)
 {
 	efi_error("not implented");
 	errno = -ENOSYS;
 	return -1;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
-efidp_parse_device_path(char *path __attribute__((unused)),
-			efidp out __attribute__((unused)),
-			size_t size __attribute__((unused)))
+ssize_t PUBLIC
+efidp_parse_device_path(char *path UNUSED, efidp out UNUSED,
+			size_t size UNUSED)
 {
 	efi_error("not implented");
 	errno = -ENOSYS;
 	return -1;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_vendor(uint8_t *buf, ssize_t size, uint8_t type, uint8_t subtype,
 		  efi_guid_t vendor_guid, void *data, size_t data_size)
 {
@@ -466,8 +435,7 @@ efidp_make_vendor(uint8_t *buf, ssize_t size, uint8_t type, uint8_t subtype,
 	return sz;
 }
 
-ssize_t
-__attribute__((__visibility__ ("default")))
+ssize_t PUBLIC
 efidp_make_generic(uint8_t *buf, ssize_t size, uint8_t type, uint8_t subtype,
 		   ssize_t total_size)
 {

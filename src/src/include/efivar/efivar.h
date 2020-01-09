@@ -38,13 +38,31 @@ typedef struct {
 	uint8_t		e[6];
 } efi_guid_t;
 
+typedef struct {
+	uint8_t		addr[4];
+} efi_ipv4_addr_t;
+
+typedef struct {
+	uint8_t		addr[16];
+} efi_ipv6_addr_t;
+
+typedef union {
+	uint32_t	addr[4];
+	efi_ipv4_addr_t	v4;
+	efi_ipv6_addr_t	v6;
+} efi_ip_addr_t;
+
+typedef struct {
+	uint8_t		addr[32];
+} efi_mac_addr_t;
+
 #ifndef EFIVAR_BUILD_ENVIRONMENT
-#include <efivar-guids.h>
+#include <efivar/efivar-guids.h>
 #endif
 
 #if BYTE_ORDER == LITTLE_ENDIAN
 #define EFI_GUID(a,b,c,d,e0,e1,e2,e3,e4,e5) \
-((efi_guid_t) {(a), (b), (c), bswap_16(d), { (e0), (e1), (e2), (e3), (e4), (e5) }})
+((efi_guid_t) {(a), (b), (c), __builtin_bswap16(d), { (e0), (e1), (e2), (e3), (e4), (e5) }})
 #else
 #define EFI_GUID(a,b,c,d,e0,e1,e2,e3,e4,e5) \
 ((efi_guid_t) {(a), (b), (c), (d), { (e0), (e1), (e2), (e3), (e4), (e5) }})
@@ -70,6 +88,8 @@ extern int efi_get_variable_size(efi_guid_t guid, const char *name,
 extern int efi_get_variable_attributes(efi_guid_t, const char *name,
 				       uint32_t *attributes)
 				__attribute__((__nonnull__ (2, 3)));
+extern int efi_get_variable_exists(efi_guid_t, const char *name)
+				__attribute__((__nonnull__ (2)));
 extern int efi_get_variable(efi_guid_t guid, const char *name, uint8_t **data,
 			    size_t *data_size, uint32_t *attributes)
 				__attribute__((__nonnull__ (2, 3, 4, 5)));
@@ -207,6 +227,6 @@ efi_error_clear(void)
 #define efi_error_val(errval, msg, args...) \
 	efi_error_real__(errval, __FILE__, __func__, __LINE__, (fmt), ## args)
 
-#include <efivar-dp.h>
+#include <efivar/efivar-dp.h>
 
 #endif /* EFIVAR_H */
