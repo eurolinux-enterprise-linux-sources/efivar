@@ -1,0 +1,44 @@
+From 9d74090cea256021e68b204c4770a5df28398cbd Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 1 May 2017 15:59:09 -0400
+Subject: [PATCH 20/22] dp.h: Try to make covscan believe format() is checking
+ its bounds.
+
+covscan doesn't grok that size and off wind up being proxies for buf's
+NULL check.  Hilarity ensues.
+
+Signed-off-by: Peter Jones <pjones@redhat.com>
+---
+ src/dp.h | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/src/dp.h b/src/dp.h
+index d6775a6..c14a9ec 100644
+--- a/src/dp.h
++++ b/src/dp.h
+@@ -28,11 +28,17 @@
+ #include "ucs2.h"
+ 
+ #define format(buf, size, off, dp_type, fmt, args...) ({		\
+-		ssize_t _x = 0;						\
+-		if ((off) >= 0) {					\
+-			_x = snprintf(((buf)+(off)),			\
+-			       ((size)?((size)-(off)):0),		\
+-			       fmt, ## args);				\
++		ssize_t _insize = 0;					\
++		void *_inbuf = NULL;					\
++		if ((buf) != NULL && (size) > 0) {			\
++			_inbuf = (buf) + (off);				\
++			_insize = (size) - (off);			\
++		}							\
++		if ((off) >= 0 &&					\
++		    ((buf == NULL && _insize == 0) ||			\
++		     (buf != NULL && _insize >= 0))) {			\
++			ssize_t _x = 0;					\
++			_x = snprintf(_inbuf, _insize, fmt, ## args);	\
+ 			if (_x < 0) {					\
+ 				efi_error(				\
+ 					"could not build %s DP string",	\
+-- 
+2.12.2
+

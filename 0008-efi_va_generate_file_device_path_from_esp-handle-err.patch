@@ -1,0 +1,52 @@
+From 537d3d37d1091080362e11a6fa99b9f31cb48e53 Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 1 May 2017 14:48:49 -0400
+Subject: [PATCH 08/22] efi_va_generate_file_device_path_from_esp(): handle
+ errors better.
+
+When efi_va_generate_file_device_path_from_esp() gets an error from
+efidp_make_edd10() or make_blockdev_path(), it fails to close the file
+descriptor it uses to do ioctl() against the disk.  So make it use the
+common error path for those as well.
+
+Found by covscan.
+
+Signed-off-by: Peter Jones <pjones@redhat.com>
+---
+ src/creator.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/creator.c b/src/creator.c
+index 6d662b7..ccd0faf 100644
+--- a/src/creator.c
++++ b/src/creator.c
+@@ -180,7 +180,7 @@ efi_va_generate_file_device_path_from_esp(uint8_t *buf, ssize_t size,
+ 				       uint32_t options, va_list ap)
+ {
+ 	int rc;
+-	ssize_t ret = -1, off=0, sz;
++	ssize_t ret = -1, off = 0, sz;
+ 	struct disk_info info = { 0, };
+ 	int fd = -1;
+ 	int saved_errno;
+@@ -215,7 +215,7 @@ efi_va_generate_file_device_path_from_esp(uint8_t *buf, ssize_t size,
+ 		sz = efidp_make_edd10(buf, size, info.edd10_devicenum);
+ 		if (sz < 0) {
+ 			efi_error("could not make EDD 1.0 device path");
+-			return -1;
++			goto err;
+ 		}
+ 		off = sz;
+ 	} else if (!(options & EFIBOOT_ABBREV_FILE)
+@@ -228,7 +228,7 @@ efi_va_generate_file_device_path_from_esp(uint8_t *buf, ssize_t size,
+ 		sz = make_blockdev_path(buf, size, &info);
+ 		if (sz < 0) {
+ 			efi_error("could not create device path");
+-			return -1;
++			goto err;
+ 		}
+ 		off += sz;
+ 	}
+-- 
+2.12.2
+

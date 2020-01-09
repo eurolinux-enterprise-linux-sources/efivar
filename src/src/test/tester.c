@@ -1,3 +1,20 @@
+/*
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of the
+ * License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ */
+
 #include <alloca.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -13,16 +30,17 @@
 
 #define TEST_GUID EFI_GUID(0x84be9c3e,0x8a32,0x42c0,0x891c,0x4c,0xd3,0xb0,0x72,0xbe,0xcc)
 
-unsigned int get_random_bytes(size_t size, uint8_t **data)
+uint8_t *
+__attribute__((malloc))
+__attribute__((alloc_size(1)))
+get_random_bytes(size_t size)
 {
-	int ret = -1;
+	uint8_t *ret = NULL;
 	int errno_saved = 0;
 	int fd = -1;
 
-	if (!size) {
-		*data = NULL;
-		return 0;
-	}
+	if (!size)
+		return ret;
 
 	uint8_t *retdata = malloc(size);
 	if (!retdata)
@@ -36,9 +54,8 @@ unsigned int get_random_bytes(size_t size, uint8_t **data)
 	if (rc < 0)
 		goto fail;
 
-	*data = retdata;
+	ret = retdata;
 	retdata = NULL;
-	ret = 0;
 fail:
 	errno_saved = errno;
 
@@ -71,29 +88,33 @@ static void print_error(int line, struct test *test, int rc, char *fmt, ...)
 
 #define report_error(test, ret, rc, ...) ({			\
 		__typeof(errno) __errno_saved = errno;		\
-		if (test->result != rc)				\
-			print_error(__LINE__, test, rc, __VA_ARGS__);	\
 		free(testdata);					\
-		ret = -1;					\
 		if (data) {					\
 			free(data);				\
 			data = NULL;				\
 		}						\
+		if (test->result != rc) {				\
+			print_error(__LINE__, test, rc, __VA_ARGS__);	\
+			ret = -1;					\
+			errno = __errno_saved;				\
+			goto fail;					\
+		}							\
 		errno = __errno_saved;				\
-		goto fail;					\
 	})
 
 int do_test(struct test *test)
 {
-	int rc;
+	int rc = -1;
 	errno = 0;
 
 	uint8_t *testdata = NULL;
 	uint8_t *data = NULL;
 
-	rc = get_random_bytes(test->size, &testdata);
-	if (rc < 0)
-		return rc;
+	testdata = get_random_bytes(test->size);
+	if (testdata == NULL && errno != 0) {
+		perror(test->name);
+		return -1;
+	}
 
 	int ret = 0;
 
@@ -101,8 +122,8 @@ int do_test(struct test *test)
 	rc = efi_set_variable(TEST_GUID, test->name,
 			      testdata, test->size,
 			      EFI_VARIABLE_BOOTSERVICE_ACCESS |
-			      EFI_VARIABLE_RUNTIME_ACCESS | 
-			      EFI_VARIABLE_NON_VOLATILE);
+			      EFI_VARIABLE_RUNTIME_ACCESS |
+			      EFI_VARIABLE_NON_VOLATILE, 0600);
 	if (rc < 0) {
 		report_error(test, ret, rc, "set test failed: %m\n");
 	}
@@ -116,7 +137,7 @@ int do_test(struct test *test)
 		report_error(test, ret, rc, "get size test failed: %m\n");
 
 	if (datasize != test->size)
-		report_error(test, ret, rc, "get size test failed: wrong size\n");
+		report_error(test, ret, -1, "get size test failed: wrong size: %zd should be %zd\n", datasize, test->size);
 
 	printf("testing efi_get_variable()\n");
 	rc = efi_get_variable(TEST_GUID, test->name, &data, &datasize,
@@ -125,10 +146,12 @@ int do_test(struct test *test)
 		report_error(test, ret, rc, "get test failed: %m\n");
 
 	if (datasize != test->size)
-		report_error(test, ret, rc, "get test failed: wrong size\n");
+		report_error(test, ret, -1, "get size test failed: wrong size: %zd should be %zd\n", datasize, test->size);
 
-	if (memcmp(data, testdata, test->size))
-		report_error(test, ret, rc, "get test failed: bad data\n");
+	if (testdata != NULL && test->size > 0)
+		if (memcmp(data, testdata, test->size))
+			report_error(test, ret, rc,
+					"get test failed: bad data\n");
 
 	free(data);
 	data = NULL;
@@ -156,12 +179,14 @@ int do_test(struct test *test)
 	rc = efi_set_variable(TEST_GUID, test->name,
 			      testdata, test->size,
 			      EFI_VARIABLE_BOOTSERVICE_ACCESS |
-			      EFI_VARIABLE_RUNTIME_ACCESS | 
-			      EFI_VARIABLE_NON_VOLATILE);
+			      EFI_VARIABLE_RUNTIME_ACCESS |
+			      EFI_VARIABLE_NON_VOLATILE,
+			      0600);
 	if (rc < 0) {
 		report_error(test, ret, rc, "set test failed: %m\n");
 	}
 
+	printf("testing efi_append_variable()\n");
 	rc = efi_append_variable(TEST_GUID, test->name,
 				testdata, test->size,
 				EFI_VARIABLE_APPEND_WRITE |
@@ -179,7 +204,7 @@ int do_test(struct test *test)
 		report_error(test, ret, rc, "get test failed: %m\n");
 
 	if (datasize != test->size * 2)
-		report_error(test, ret, rc, "get test failed: wrong size\n");
+		report_error(test, ret, -1, "get size test failed: wrong size: %zd should be %zd (append may be at fault)\n", datasize, test->size * 2);
 
 	if (memcmp(data, testdata, test->size))
 		report_error(test, ret, rc, "get test failed: bad data\n");
@@ -188,8 +213,10 @@ int do_test(struct test *test)
 
 	printf("testing efi_del_variable()\n");
 	rc = efi_del_variable(TEST_GUID, test->name);
-	if (rc < 0)
+	if (rc < 0 && test->size != 0)
 		report_error(test, ret, rc, "del test failed: %m\n");
+	else
+		ret = test->result;
 
 	free(data);
 	free(testdata);

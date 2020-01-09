@@ -1,9 +1,10 @@
-SRCDIR = .
+SRCDIR = $(realpath .)
 TOPDIR = $(realpath $(SRCDIR)/../..)
 
 include $(TOPDIR)/Make.defaults
+include $(TOPDIR)/Make.version
 
-CCLDFLAGS += -L$(TOPDIR)/src/ -Wl,-rpath=$(TOPDIR)/src/
+ccldflags += -L$(TOPDIR)/src/ -Wl,-rpath=$(TOPDIR)/src/
 LIBS=efivar
 
 all : tester
@@ -17,6 +18,7 @@ test : tester
 	./tester
 
 tester :: tester.o
+	$(CC) $(cflags) $(LDFLAGS) -Wl,-rpath,$(TOPDIR)/src -L$(TOPDIR)/src -o $@ $^ -lefivar -ldl
 
 .PHONY: all clean install test
 

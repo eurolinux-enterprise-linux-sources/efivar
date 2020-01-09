@@ -7,8 +7,15 @@
 *.S
 !src/guids.S
 *.so
-*.so.?
+*.so.*
 *.tar.*
 .*.c.P
 .*.h.P
+.*.d
 core.*
+*.spec
+src/efivar
+src/efivar-static
+src/makeguids
+src/guid-symbols.c
+*.map

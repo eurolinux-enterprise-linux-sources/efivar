@@ -1,7 +1,27 @@
+/*
+ * Copyright 2012-2016 Red Hat, Inc.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of the
+ * License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ */
+
 #ifndef LIBEFIVAR_GENERIC_NEXT_VARIABLE_NAME_H
 #define LIBEFIVAR_GENERIC_NEXT_VARIABLE_NAME_H 1
 
 #include <dirent.h>
+#include <err.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -15,41 +35,50 @@ static DIR *dir;
 
 static inline int
 __attribute__((unused))
-generic_get_next_variable_name(char *path, efi_guid_t **guid, char **name)
+generic_get_next_variable_name(const char *path, efi_guid_t **guid, char **name)
 {
 	static char ret_name[NAME_MAX+1];
 	static efi_guid_t ret_guid;
+
+	if (!guid || !name) {
+		errno = EINVAL;
+		efi_error("invalid arguments");
+		return -1;
+	}
 
 	/* if only one of guid and name are null, there's no "next" variable,
 	 * because the current variable is invalid. */
 	if ((*guid == NULL && *name != NULL) ||
 			(*guid != NULL && *name == NULL)) {
 		errno = EINVAL;
+		efi_error("invalid arguments");
 		return -1;
-	}
-
-	/* if they're both NULL, we're starting over */
-	if (guid == NULL && dir != NULL) {
-		closedir(dir);
-		dir = NULL;
 	}
 
 	/* if dir is NULL, we're also starting over */
 	if (!dir) {
 		dir = opendir(path);
-		if (!dir)
+		if (!dir) {
+			efi_error("opendir(%s) failed", path);
 			return -1;
+		}
 
 		int fd = dirfd(dir);
 		if (fd < 0) {
 			typeof(errno) errno_value = errno;
+			efi_error("dirfd failed");
 			closedir(dir);
 			errno = errno_value;
 			return -1;
 		}
 		int flags = fcntl(fd, F_GETFD);
-		flags |= FD_CLOEXEC;
-		fcntl(fd, F_SETFD, flags);
+		if (flags < 0) {
+			efi_error("fcntl(fd, F_GETFD) failed");
+		} else {
+			flags |= FD_CLOEXEC;
+			if (fcntl(fd, F_SETFD, flags) < 0)
+				efi_error("fcntl(fd, F_SETFD, flags | FD_CLOEXEC) failed");
+		}
 
 		*guid = NULL;
 		*name = NULL;
@@ -77,6 +106,7 @@ generic_get_next_variable_name(char *path, efi_guid_t **guid, char **name)
 			closedir(dir);
 			dir = NULL;
 			errno = EINVAL;
+			efi_error("text_to_guid failed");
 			return -1;
 		}
 
@@ -104,7 +134,8 @@ close_dir(void)
 /* this is a simple read/delete/write implementation of "update".  Good luck.
  * -- pjones */
 static int
-__attribute__((unused))
+__attribute__((__unused__))
+__attribute__((__flatten__))
 generic_append_variable(efi_guid_t guid, const char *name,
 		       uint8_t *new_data, size_t new_data_size,
 		       uint32_t new_attributes)
@@ -115,7 +146,7 @@ generic_append_variable(efi_guid_t guid, const char *name,
 	uint32_t attributes = 0;
 
 	rc = efi_get_variable(guid, name, &data, &data_size, &attributes);
-	if (rc > 0) {
+	if (rc >= 0) {
 		if ((attributes | EFI_VARIABLE_APPEND_WRITE) !=
 				(new_attributes | EFI_VARIABLE_APPEND_WRITE)) {
 			free(data);
@@ -129,6 +160,7 @@ generic_append_variable(efi_guid_t guid, const char *name,
 		attributes &= ~EFI_VARIABLE_APPEND_WRITE;
 		rc = efi_del_variable(guid, name);
 		if (rc < 0) {
+			efi_error("efi_del_variable failed");
 			free(data);
 			free(d);
 			return rc;
@@ -137,17 +169,20 @@ generic_append_variable(efi_guid_t guid, const char *name,
 		 * really not much to do about it, so return the error and
 		 * let our caller attempt to clean up :/
 		 */
-		rc = efi_set_variable(guid, name, d, ds, attributes);
+		rc = efi_set_variable(guid, name, d, ds, attributes, 0600);
+		if (rc < 0)
+			efi_error("efi_set_variable failed");
 		free(d);
 		free(data);
-		return rc;
-	} else if (rc == ENOENT) {
+	} else if (errno == ENOENT) {
 		data = new_data;
 		data_size = new_data_size;
 		attributes = new_attributes & ~EFI_VARIABLE_APPEND_WRITE;
-		rc = efi_set_variable(guid, name, data, data_size, attributes);
-		return rc;
+		rc = efi_set_variable(guid, name, data, data_size,
+				      attributes, 0600);
 	}
+	if (rc < 0)
+		efi_error("efi_set_variable failed");
 	return rc;
 }
 

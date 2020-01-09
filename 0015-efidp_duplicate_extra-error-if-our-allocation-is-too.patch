@@ -1,0 +1,34 @@
+From 32f6b0d5974e39dbcce89d9ab8551e35eb8fdaab Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 1 May 2017 15:14:33 -0400
+Subject: [PATCH 15/22] efidp_duplicate_extra(): error if our allocation is too
+ small.
+
+Covscan believes we might pass 0 to calloc(), though I suspect this is
+because it doesn't fully grok add().
+
+Signed-off-by: Peter Jones <pjones@redhat.com>
+---
+ src/dp.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/dp.c b/src/dp.c
+index e700af9..eadb397 100644
+--- a/src/dp.c
++++ b/src/dp.c
+@@ -81,6 +81,12 @@ efidp_duplicate_extra(const_efidp dp, efidp *out, size_t extra)
+ 		return -1;
+ 	}
+ 
++	if (plus < (ssize_t)sizeof(efidp_header)) {
++		errno = EINVAL;
++		efi_error("allocation for new device path is smaller than device path header.");
++		return -1;
++	}
++
+ 	new = calloc(1, plus);
+ 	if (!new) {
+ 		efi_error("allocation failed");
+-- 
+2.12.2
+

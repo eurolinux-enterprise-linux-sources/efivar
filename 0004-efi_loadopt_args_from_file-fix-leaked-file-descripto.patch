@@ -1,0 +1,35 @@
+From 0967cd89ae6c1e55c1d136669e2f426752f233f4 Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 1 May 2017 14:40:26 -0400
+Subject: [PATCH 04/22] efi_loadopt_args_from_file(): fix leaked file
+ descriptor.
+
+In the case where we're just trying to figure out the file's size, we're
+failing to close the file.  So close it.
+
+Found by covscan.
+
+Signed-off-by: Peter Jones <pjones@redhat.com>
+---
+ src/loadopt.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/loadopt.c b/src/loadopt.c
+index ce88986..a3c1ba9 100644
+--- a/src/loadopt.c
++++ b/src/loadopt.c
+@@ -275,8 +275,10 @@ efi_loadopt_args_from_file(uint8_t *buf, ssize_t size, char *filename)
+ 	if (rc < 0)
+ 		goto err;
+ 
+-	if (size == 0)
++	if (size == 0) {
++		fclose(f);
+ 		return statbuf.st_size;
++	}
+ 
+ 	if (size < statbuf.st_size) {
+ 		errno = ENOSPC;
+-- 
+2.12.2
+

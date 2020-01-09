@@ -1,47 +1,69 @@
 TOPDIR = $(shell echo $$PWD)
 
+include $(TOPDIR)/Make.version
+include $(TOPDIR)/Make.rules
+include $(TOPDIR)/Make.defaults
+
 SUBDIRS := src docs
-VERSION := 0.11
 
-all : $(SUBDIRS)
-
-$(SUBDIRS) :
-	$(MAKE) -C $@ TOPDIR=$(TOPDIR) SRCDIR=$(TOPDIR)/$@/ ARCH=$(ARCH) VERSION=$(VERSION)
-
-clean :
-	@for x in $(SUBDIRS) ; do $(MAKE) -C $${x} TOPDIR=$(TOPDIR) SRCDIR=$(TOPDIR)/$@/ ARCH=$(ARCH) $@ ; done
+all : | efivar.spec Make.version
+all :
+	@set -e ; for x in $(SUBDIRS) ; do \
+		$(MAKE) -C $$x $@ ; \
+	done
 
 install :
-	@for x in $(SUBDIRS) ; do $(MAKE) -C $${x} TOPDIR=$(TOPDIR) SRCDIR=$(TOPDIR)/$@/ ARCH=$(ARCH) VERSION=$(VERSION) DESTDIR=$(DESTDIR) includedir=$(includedir) bindir=$(bindir) libdir=$(libdir) PCDIR=$(PCDIR) $@ ; done
+	@set -e ; for x in $(SUBDIRS) ; do \
+		$(MAKE) -C $$x $@ ; \
+	done
 
-test : all
-	@for x in $(SUBDIRS) ; do $(MAKE) -C $${x} TOPDIR=$(TOPDIR) SRCDIR=$(TOPDIR)/$@/ ARCH=$(ARCH) $@ ; done
+abidw abicheck efivar efivar-static static:
+	$(MAKE) -C src $@
 
-.PHONY: $(SUBDIRS) all clean install test
+$(SUBDIRS) :
+	$(MAKE) -C $@
 
-include $(TOPDIR)/Make.defaults
-include $(TOPDIR)/Make.rules
+brick : all
+	@set -e ; for x in $(SUBDIRS) ; do $(MAKE) -C $${x} test ; done
+
+a :
+	@if [ $${EUID} != 0 ]; then \
+		echo no 1>&2 ; \
+		exit 1 ; \
+	fi
+
+.PHONY: $(SUBDIRS) a brick
+
+efivar.spec : | Makefile Make.version
+
+clean :
+	@set -e ; for x in $(SUBDIRS) ; do \
+		$(MAKE) -C $$x $@ ; \
+	done
+	@rm -vf efivar.spec
 
 GITTAG = $(VERSION)
 
-test-archive:
+test-archive: abicheck efivar.spec
 	@rm -rf /tmp/efivar-$(VERSION) /tmp/efivar-$(VERSION)-tmp
 	@mkdir -p /tmp/efivar-$(VERSION)-tmp
 	@git archive --format=tar $(shell git branch | awk '/^*/ { print $$2 }') | ( cd /tmp/efivar-$(VERSION)-tmp/ ; tar x )
 	@git diff | ( cd /tmp/efivar-$(VERSION)-tmp/ ; patch -s -p1 -b -z .gitdiff )
 	@mv /tmp/efivar-$(VERSION)-tmp/ /tmp/efivar-$(VERSION)/
+	@cp efivar.spec /tmp/efivar-$(VERSION)/
 	@dir=$$PWD; cd /tmp; tar -c --bzip2 -f $$dir/efivar-$(VERSION).tar.bz2 efivar-$(VERSION)
 	@rm -rf /tmp/efivar-$(VERSION)
 	@echo "The archive is in efivar-$(VERSION).tar.bz2"
 
 tag:
-	git tag efivar-$(GITTAG) refs/heads/master
+	git tag -s $(GITTAG) refs/heads/master
 
-archive: tag
+archive: abicheck abidw tag efivar.spec
 	@rm -rf /tmp/efivar-$(VERSION) /tmp/efivar-$(VERSION)-tmp
 	@mkdir -p /tmp/efivar-$(VERSION)-tmp
-	@git archive --format=tar efivar-$(GITTAG) | ( cd /tmp/efivar-$(VERSION)-tmp/ ; tar x )
+	@git archive --format=tar $(GITTAG) | ( cd /tmp/efivar-$(VERSION)-tmp/ ; tar x )
 	@mv /tmp/efivar-$(VERSION)-tmp/ /tmp/efivar-$(VERSION)/
+	@cp efivar.spec /tmp/efivar-$(VERSION)/
 	@dir=$$PWD; cd /tmp; tar -c --bzip2 -f $$dir/efivar-$(VERSION).tar.bz2 efivar-$(VERSION)
 	@rm -rf /tmp/efivar-$(VERSION)
 	@echo "The archive is in efivar-$(VERSION).tar.bz2"

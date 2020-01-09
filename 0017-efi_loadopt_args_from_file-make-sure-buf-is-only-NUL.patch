@@ -1,0 +1,31 @@
+From d251242a71ef01626444180c630330bcfb0ca69e Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 1 May 2017 15:19:18 -0400
+Subject: [PATCH 17/22] efi_loadopt_args_from_file(): make sure buf is only
+ NULL if size is.
+
+This avoids passing NULL to fread().
+
+Found by covscan.
+
+Signed-off-by: Peter Jones <pjones@redhat.com>
+---
+ src/loadopt.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/loadopt.c b/src/loadopt.c
+index 8db8074..5301f3d 100644
+--- a/src/loadopt.c
++++ b/src/loadopt.c
+@@ -269,7 +269,7 @@ efi_loadopt_args_from_file(uint8_t *buf, ssize_t size, char *filename)
+ 	int saved_errno;
+ 	FILE *f;
+ 
+-	if (!buf && size > 0) {
++	if (!buf && size != 0) {
+ 		errno = -EINVAL;
+ 		return -1;
+ 	}
+-- 
+2.12.2
+

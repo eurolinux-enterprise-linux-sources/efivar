@@ -1,28 +1,78 @@
+default : all
+
+.PHONY: default all clean install test
+
+include $(TOPDIR)/Make.version
+
 %.a :
 	$(AR) -cvqs $@ $^
 
-% : %.o
-	$(CC) $(CCLDFLAGS) -o $@ $^ $(foreach lib,$(LIBS),-l$(lib))
+% : %.c
 
-%.so.$(SONAME_VERSION) : 
-	$(CC) $(CFLAGS) -Wl,-soname,$(SONAME) $(CCLDFLAGS) $(LIBFLAGS) $^ -o $@
+% : %.c
+	$(CCLD) $(ccldflags) $(CPPFLAGS) -o $@ $^ $(LDLIBS)
 
-%.so : %.so.$(SONAME_VERSION)
-	ln -sf $^ $@
+%-static : ccldflags+=-static
+%-static : %.c
+	$(CCLD) $(ccldflags) $(CPPFLAGS) -o $@ $^ $(LDLIBS)
 
-%.o: %.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+%.so :
+	$(CCLD) $(ccldflags) $(CPPFLAGS) $(SOFLAGS) \
+	  -Wl,-soname,$@.1 \
+	  -Wl,--version-script=$(MAP) \
+	  -o $@ $^ $(LDLIBS)
 
-.%.c.P : %.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -DEFIVAR_BUILD_ENVIRONMENT -M -MM -MF $@ $^
+%.abixml : %.so
+	$(ABIDW) --headers-dir $(TOPDIR)/src/include/efivar/ --out-file $@ $^
 
-.%.h.P : %.h
-	$(CC) $(CFLAGS) $(CPPFLAGS) -DEFIVAR_BUILD_ENVIRONMENT -M -MM -MF $@ $^
+%.abicheck : %.so
+	$(ABIDIFF) --suppr \
+		$(patsubst %.so,%.abignore,$<) \
+		$(patsubst %.so,%.abixml,$<) \
+		$<
+
+%.o : %.c
+	$(CC) $(cflags) -fPIC $(CPPFLAGS) -c -o $@ $(filter %.c %.o %.S,$^)
+
+%.static.o : %.c
+	$(CC) $(cflags) -fPIE $(CPPFLAGS) -c -o $@ $(filter %.c %.o %.S,$^)
+
+%.o : %.S
+	$(CC) $(cflags) -fPIC $(CPPFLAGS) -c -o $@ $(filter %.c %.o %.S,$^)
+
+%.static.o : %.S
+	$(CC) $(cflags) -fPIE $(CPPFLAGS) -c -o $@ $(filter %.c %.o %.S,$^)
 
 %.S: %.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -S $< -o $@
+	$(CC) $(cflags) $(CPPFLAGS) -S $< -o $@
 
 %.E: %.c
-	$(CC) $(CFLAGS) $(CPPFLAGS) -E $< -o $@
+	$(CC) $(cflags) $(CPPFLAGS) -E $< -o $@
 
 %.c : %.h
+
+define substitute-version
+	sed						\
+		-e "s,@@VERSION@@,$(VERSION),g"		\
+		-e "s,@@LIBDIR@@,$(libdir),g"		\
+		$(1) > $(2)
+endef
+
+%.pc : %.pc.in
+	@$(call substitute-version,$<,$@)
+%.spec : %.spec.in
+	@$(call substitute-version,$<,$@)
+%.map : %.map.in
+	@$(call substitute-version,$<,$@)
+
+pkg-config-cflags = \
+	$(shell if [ -n "$(PKGS)" ]; then $(PKG_CONFIG) --cflags $(PKGS); fi)
+pkg-config-ldflags = \
+	$(shell if [ -n "$(PKGS)" ]; then $(PKG_CONFIG) --libs-only-L --libs-only-other $(PKGS) ; fi)
+pkg-config-ldlibs = \
+	$(shell if [ -n "$(PKGS)" ]; then $(PKG_CONFIG) --libs-only-l $(PKGS) ; fi)
+
+define deps-of
+	$(foreach src,$(filter %.c,$(1)),$(patsubst %.c,.%.d,$(src))) \
+	$(foreach src,$(filter %.S,$(1)),$(patsubst %.S,.%.d,$(src)))
+endef

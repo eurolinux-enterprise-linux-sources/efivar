@@ -1,0 +1,34 @@
+From 262e2900dde1e03d499b3e06f389dcdd8f12f2fd Mon Sep 17 00:00:00 2001
+From: Peter Jones <pjones@redhat.com>
+Date: Mon, 13 Mar 2017 14:03:55 -0400
+Subject: [PATCH 3/3] popt-devel in RHEL 7.4 doesn't provide popt.pc, so
+ include it the other way.
+
+Signed-off-by: Peter Jones <pjones@redhat.com>
+---
+ src/Makefile | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/src/Makefile b/src/Makefile
+index a5d98ec..c957d84 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -56,13 +56,11 @@ libefivar.so : LIBS=dl
+ libefivar.so : MAP=libefivar.map
+ 
+ efivar : efivar.c | libefivar.so
+-efivar : LIBS=efivar dl
+-efivar : PKGS=popt
++efivar : LIBS=efivar dl popt
+ 
+ efivar-static : efivar.c $(patsubst %.o,%.static.o,$(LIBEFIVAR_OBJECTS))
+ efivar-static : | $(GENERATED_SOURCES)
+-efivar-static : LIBS=dl
+-efivar-static : PKGS=popt
++efivar-static : LIBS=dl popt
+ 
+ libefiboot.a : $(patsubst %.o,%.static.o,$(LIBEFIBOOT_OBJECTS))
+ 
+-- 
+2.9.3
+
