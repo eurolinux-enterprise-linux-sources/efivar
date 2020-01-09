@@ -1,0 +1,4 @@
+*.bin
+efivar
+makeguids
+efivar-guids.h

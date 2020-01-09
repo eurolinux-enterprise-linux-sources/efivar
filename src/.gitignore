@@ -1,0 +1,14 @@
+.*.sw?
+*~
+*.a
+*.E
+*.o
+*.pc
+*.S
+!src/guids.S
+*.so
+*.so.?
+*.tar.*
+.*.c.P
+.*.h.P
+core.*
