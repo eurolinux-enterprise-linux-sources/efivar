@@ -1,6 +1,6 @@
 Name:           efivar
 Version:        36
-Release:        11%{?dist}
+Release:        11%{?dist}.1
 Summary:        Tools to manage UEFI variables
 License:        LGPLv2+
 URL:            https://github.com/rhinstaller/efivar
@@ -39,6 +39,7 @@ Patch0027: 0027-Fix-another-buggy-fake-acpi-pci-root-driver.patch
 Patch0028: 0028-Fix-dev-probes-intialization-test.patch
 Patch0029: 0029-Deal-with-devices-that-don-t-have-a-device-link-in-s.patch
 Patch0030: 0030-Handle-partition-name-parsing-and-formatting-for-par.patch
+Patch0031: 0031-Fix-partition-number-detection-when-it-s-not-provide.patch
 
 %description
 efivar provides a simple command line interface to the UEFI variable facility.
@@ -99,6 +100,10 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/*.so.*
 
 %changelog
+* Tue Nov 13 2018 Javier Martinez Canillas <javierm@redhat.com> - 36-11.el7_6.1
+- Fix partition number detection when it's not provided (pjones)
+  Resolves: rhbz#1649712
+
 * Mon Sep 17 2018 Peter Jones <pjones@redhat.com> - 36-11
 - Fix device probing with no matching probes where HD() will work
   Resolves: rhbz#1613698
